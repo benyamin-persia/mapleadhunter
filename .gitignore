@@ -1,0 +1,23 @@
+node_modules/
+dist/
+coverage/
+
+# Local environment and secrets
+.env
+.env.local
+*.log
+
+# Local databases and scrape output
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/exports/
+
+# Browser profiles can contain cookies, history, and account data
+data/maps-profile/
+
+# Local editor/assistant metadata
+.claude/
+.specstory/
+.vscode/
+CLAUDE.md

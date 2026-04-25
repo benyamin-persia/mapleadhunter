@@ -1,0 +1,1883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MapLeadHunter</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' }</script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak]{display:none!important}
+    .log-line{font-family:'Courier New',monospace;font-size:12px;line-height:1.7}
+    ::-webkit-scrollbar{width:6px;height:6px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:#475569;border-radius:3px}
+
+    /* Resizable table columns */
+    .resizable-table th {
+      resize: horizontal;
+      overflow: hidden;
+      min-width: 40px;
+      position: relative;
+      white-space: nowrap;
+    }
+    .resizable-table th::after {
+      content: '';
+      position: absolute;
+      right: 0; top: 20%; bottom: 20%;
+      width: 3px;
+      background: #cbd5e1;
+      border-radius: 2px;
+      cursor: col-resize;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .resizable-table th:hover::after { opacity: 1; }
+
+    /* Dark mode overrides */
+    html.dark body { background-color: #0f172a; color: #e2e8f0; }
+    html.dark aside { background-color: #020617 !important; }
+    html.dark main { background-color: #0f172a !important; }
+    html.dark .bg-white { background-color: #1e293b !important; }
+    html.dark .bg-slate-50 { background-color: #0f172a !important; }
+    html.dark .bg-slate-100 { background-color: #1e293b !important; }
+    html.dark .border-slate-200 { border-color: #334155 !important; }
+    html.dark .border-slate-100 { border-color: #1e293b !important; }
+    html.dark .text-slate-800 { color: #e2e8f0 !important; }
+    html.dark .text-slate-700 { color: #cbd5e1 !important; }
+    html.dark .text-slate-600 { color: #94a3b8 !important; }
+    html.dark .text-slate-500 { color: #64748b !important; }
+    html.dark .bg-slate-50.rounded-xl { background-color: #1e293b !important; }
+    html.dark input, html.dark textarea, html.dark select {
+      background-color: #1e293b !important;
+      color: #e2e8f0 !important;
+      border-color: #334155 !important;
+    }
+    html.dark .hover\:bg-slate-50:hover { background-color: #1e293b !important; }
+    html.dark table thead { background-color: #1e293b !important; }
+    html.dark .divide-slate-100 > * { border-color: #1e293b !important; }
+
+    /* Theme switch animation */
+    .theme-icon { transition: all 0.3s cubic-bezier(0.34,1.56,0.64,1); }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800" x-data="app()" x-init="init()" x-cloak>
+<div class="flex h-screen overflow-hidden">
+
+  <!-- ── Sidebar ── -->
+  <aside class="w-52 bg-slate-900 flex flex-col flex-shrink-0">
+    <div class="p-4 border-b border-slate-700">
+      <div class="text-white font-bold text-lg">MapLead<span class="text-indigo-400">Hunter</span></div>
+      <div class="text-slate-500 text-xs mt-0.5">Business lead scraper</div>
+    </div>
+    <nav class="flex-1 p-2 space-y-0.5 mt-1">
+      <template x-for="item in nav" :key="item.id">
+        <button @click="section=item.id; item.onEnter && item.onEnter()"
+          :class="section===item.id?'bg-indigo-600 text-white':'text-slate-400 hover:bg-slate-800 hover:text-white'"
+          class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors">
+          <span x-text="item.icon"></span>
+          <span x-text="item.label"></span>
+          <span x-show="item.id==='leads' && stats.total>0" class="ml-auto bg-slate-700 text-slate-300 text-xs rounded-full px-2" x-text="stats.total"></span>
+          <span x-show="item.id==='scraper' && scraping" class="ml-auto w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+        </button>
+      </template>
+    </nav>
+    <div class="p-3 border-t border-slate-700 text-xs flex items-center gap-2">
+      <div :class="scraping?'bg-green-400 animate-pulse':'bg-slate-600'" class="w-2 h-2 rounded-full flex-shrink-0"></div>
+      <span class="text-slate-400 flex-1" x-text="stopping?'Stopping...':(scraping?'Running...':'Idle')"></span>
+      <!-- Theme toggle -->
+      <button @click="toggleTheme()" title="Toggle dark mode"
+        class="relative w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-700 transition-colors overflow-hidden flex-shrink-0">
+        <!-- Sun -->
+        <svg x-bind:class="theme==='light' ? 'scale-100 translate-y-0 opacity-100' : 'scale-50 translate-y-5 opacity-0'"
+          class="theme-icon absolute w-4 h-4 text-yellow-400"
+          fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+        </svg>
+        <!-- Moon -->
+        <svg x-bind:class="theme==='dark' ? 'scale-100 translate-y-0 opacity-100' : 'scale-50 translate-y-5 opacity-0'"
+          class="theme-icon absolute w-4 h-4 text-slate-300"
+          fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ── Main ── -->
+  <main class="flex-1 overflow-auto bg-slate-50">
+
+    <!-- ══════════════════════════════════════════════════════
+         SCRAPER
+    ══════════════════════════════════════════════════════ -->
+    <div x-show="section==='scraper'" class="h-full flex flex-col">
+      <div class="px-5 py-4 border-b border-slate-200 bg-white flex items-center justify-between flex-shrink-0">
+        <div>
+          <h2 class="text-lg font-bold">Scraper</h2>
+          <p class="text-slate-500 text-xs mt-0.5">Select zips + categories → start. All businesses scraped (with and without websites).</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span x-show="selectedZips.size>0||selectedCats.size>0" class="text-xs text-slate-500"
+            x-text="selectedZips.size+' zip(s) × '+selectedCats.size+' cat(s) = '+selectedZips.size*selectedCats.size+' job(s)'"></span>
+          <button @click="startScrape(false)"
+            :disabled="scraping || stopping || selectedZips.size===0 || selectedCats.size===0"
+            class="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-2 px-5 rounded-xl text-sm transition-colors"
+            x-text="stopping?'Stopping...':(scraping?'Running...':'⚡ Fast Scrape')">
+          </button>
+          <button @click="startScrape(true)"
+            :disabled="scraping || stopping || selectedZips.size===0 || selectedCats.size===0"
+            class="bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-2 px-5 rounded-xl text-sm transition-colors"
+            x-text="stopping?'Stopping...':(scraping?'Running...':'🔍 Detail Scrape')">
+          </button>
+          <button x-show="scraping" @click="stopScrape()" :disabled="stopping" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50" x-text="stopping?'Stopping...':'Stop'"></button>
+        </div>
+      </div>
+
+      <div class="flex flex-1 overflow-hidden gap-0">
+
+        <!-- Col 1: Zip manager with geo picker -->
+        <div class="w-72 flex-shrink-0 border-r border-slate-200 bg-white flex flex-col">
+          <div class="px-4 py-3 border-b border-slate-100">
+            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Zip Codes</span>
+          </div>
+
+          <!-- State → County → Zip picker -->
+          <div class="px-3 py-2 border-b border-slate-100 space-y-2">
+            <!-- State dropdown -->
+            <select x-model="geoState" @change="onStateChange()"
+              class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400">
+              <option value="">— Pick a State —</option>
+              <template x-for="s in geoStates" :key="s.abbr">
+                <option :value="s.abbr" x-text="s.name+' ('+s.abbr+')'"></option>
+              </template>
+            </select>
+            <!-- Search -->
+            <input x-model="geoZipSearch" type="text" placeholder="Search zip or city..." :disabled="!geoState"
+              class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:opacity-40">
+            <!-- Loading -->
+            <div x-show="geoLoading" class="text-xs text-slate-400 text-center py-3">Loading zips...</div>
+            <!-- Counties + Zips -->
+            <div x-show="geoState && !geoLoading" class="max-h-64 overflow-auto border border-slate-100 rounded-lg">
+              <template x-for="county in geoGrouped" :key="county.name">
+                <div>
+                  <!-- County header -->
+                  <div class="flex items-center justify-between bg-slate-100 px-2 py-1 sticky top-0">
+                    <span class="text-xs font-bold text-slate-600" x-text="county.name"></span>
+                    <button @click="toggleCountyAll(county)"
+                      class="text-xs text-indigo-500 hover:underline"
+                      x-text="county.zips.every(z=>geoBrowseSelected.has(z.zip))?'Deselect all':'Select all'"></button>
+                  </div>
+                  <!-- Zip rows under county -->
+                  <template x-for="entry in county.zips" :key="entry.zip">
+                    <label class="flex items-center gap-2 px-3 py-0.5 hover:bg-indigo-50 cursor-pointer bg-white">
+                      <input type="checkbox" :checked="geoBrowseSelected.has(entry.zip)" @change="toggleGeoBrowse(entry.zip)"
+                        class="rounded border-slate-300 text-indigo-600 flex-shrink-0">
+                      <span class="font-mono text-xs font-bold text-slate-800 w-12 flex-shrink-0" x-text="entry.zip"></span>
+                      <span class="text-xs text-slate-500 truncate" x-text="entry.city"></span>
+                    </label>
+                  </template>
+                </div>
+              </template>
+              <div x-show="geoGrouped.length===0 && geoState && !geoLoading" class="text-xs text-slate-400 text-center py-4">No results</div>
+            </div>
+            <!-- Add bar -->
+            <div class="flex gap-1" x-show="geoState && !geoLoading">
+              <button @click="addGeoSelected()" :disabled="geoBrowseSelected.size===0"
+                class="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-xs font-semibold py-1.5 rounded-lg">
+                Add <span x-text="geoBrowseSelected.size"></span> zip(s)
+              </button>
+              <button @click="selectAllGeoVisible()" class="text-xs bg-slate-100 hover:bg-slate-200 px-2 py-1.5 rounded-lg">All</button>
+              <button @click="geoBrowseSelected=new Set()" class="text-xs bg-slate-100 hover:bg-slate-200 px-2 py-1.5 rounded-lg">✕</button>
+            </div>
+          </div>
+
+          <!-- Manual add -->
+          <div class="px-3 py-2 border-b border-slate-100">
+            <div class="flex gap-1">
+              <input x-model="zipInput" @keydown.enter="addZips()" type="text"
+                placeholder="20852, 20850..."
+                class="flex-1 border border-slate-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400">
+              <button @click="addZips()" class="bg-indigo-600 text-white text-xs px-2 py-1.5 rounded-lg font-medium">+</button>
+            </div>
+          </div>
+
+          <!-- My zip list header -->
+          <div class="px-4 py-2 border-b border-slate-100 flex items-center justify-between">
+            <span class="text-xs font-semibold text-slate-500">MY ZIPS <span class="text-slate-400 font-normal" x-text="'('+zipList.length+')'"></span></span>
+            <div class="flex gap-2">
+              <button @click="selectAllZips()" class="text-xs text-indigo-600 hover:underline">All</button>
+              <button @click="selectedZips=new Set()" class="text-xs text-slate-400 hover:underline">None</button>
+              <button @click="zipList=[];selectedZips=new Set()" class="text-xs text-red-400 hover:underline">Clear</button>
+            </div>
+          </div>
+
+          <!-- Search my zips -->
+          <div class="px-3 py-2 border-b border-slate-100">
+            <input x-model="zipSearch" type="text" placeholder="Search my zips..."
+              class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400">
+          </div>
+
+          <div class="flex-1 overflow-auto px-2 py-2 space-y-0.5">
+            <template x-if="filteredZipList.length===0">
+              <div class="text-xs text-slate-400 text-center py-6">No zips yet — browse or add above</div>
+            </template>
+            <template x-for="zip in filteredZipList" :key="zip">
+              <label class="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer group">
+                <input type="checkbox" :checked="selectedZips.has(zip)" @change="toggleZip(zip)"
+                  class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-400">
+                <span class="text-sm font-mono text-slate-700 flex-1" x-text="zip"></span>
+                <button @click.prevent="removeZip(zip)" class="text-slate-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button>
+              </label>
+            </template>
+          </div>
+
+          <div class="px-3 py-2 border-t border-slate-100 text-xs text-slate-400">
+            <span x-text="selectedZips.size+' / '+zipList.length+' selected'"></span>
+          </div>
+        </div>
+
+        <!-- Col 2: Category picker -->
+        <div class="w-72 flex-shrink-0 border-r border-slate-200 bg-white flex flex-col">
+          <div class="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Categories</span>
+            <div class="flex gap-2">
+              <button @click="selectAllCats()" class="text-xs text-indigo-600 hover:underline">All</button>
+              <button @click="selectedCats=new Set()" class="text-xs text-slate-400 hover:underline">None</button>
+            </div>
+          </div>
+          <div class="px-3 py-2 border-b border-slate-100">
+            <input x-model="catSearch" type="text" placeholder="Search categories..."
+              class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400">
+          </div>
+          <div class="flex-1 overflow-auto px-3 py-2">
+            <template x-for="group in filteredCatGroups" :key="group.label">
+              <div class="mb-3">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-xs font-semibold text-slate-500" x-text="group.label"></span>
+                  <button @click="toggleGroup(group)" class="text-xs text-indigo-500 hover:underline"
+                    x-text="group.items.every(c=>selectedCats.has(c))?'Deselect':'Select all'"></button>
+                </div>
+                <div class="space-y-0.5">
+                  <template x-for="cat in group.items" :key="cat">
+                    <label class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer">
+                      <input type="checkbox" :checked="selectedCats.has(cat)" @change="toggleCat(cat)"
+                        class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-400">
+                      <span class="text-sm text-slate-700" x-text="cat"></span>
+                    </label>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </div>
+          <div class="px-3 py-2 border-t border-slate-100 text-xs text-slate-400">
+            <span x-text="selectedCats.size+' selected'"></span>
+          </div>
+        </div>
+
+        <!-- Col 3: Settings + Live log -->
+        <div class="flex-1 flex flex-col overflow-hidden bg-slate-50">
+          <div class="px-4 py-3 border-b border-slate-200 bg-white flex items-center gap-4 flex-shrink-0">
+            <div>
+              <label class="block text-xs font-medium text-slate-500 mb-1">Max per zip/category</label>
+              <input x-model.number="form.maxPerZip" type="number" min="1" max="500"
+                class="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-500 mb-1">Scrape workers</label>
+              <input x-model.number="form.workers" type="number" min="1" max="10"
+                class="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+            </div>
+            <div class="flex items-center gap-1.5 mt-4">
+              <input type="checkbox" id="skipScraped" x-model="form.skipScraped" class="rounded accent-indigo-600">
+              <label for="skipScraped" class="text-xs text-slate-600 cursor-pointer">Skip already-scraped zips</label>
+            </div>
+            <div class="flex gap-3 text-center">
+              <div class="bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm">
+                <div class="text-xl font-bold text-indigo-600" x-text="session.jobs"></div>
+                <div class="text-slate-400 text-xs">Jobs done</div>
+              </div>
+              <div class="bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm">
+                <div class="text-xl font-bold text-slate-600" x-text="session.found"></div>
+                <div class="text-slate-400 text-xs">Found</div>
+              </div>
+              <div class="bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm">
+                <div class="text-xl font-bold text-green-600" x-text="session.saved"></div>
+                <div class="text-slate-400 text-xs">Saved</div>
+              </div>
+              <div class="bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm">
+                <div class="text-xl font-bold text-amber-600" x-text="session.duplicates"></div>
+                <div class="text-slate-400 text-xs">Duplicates</div>
+              </div>
+              <div class="bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm">
+                <div class="text-xl font-bold text-slate-700" x-text="stats.total"></div>
+                <div class="text-slate-400 text-xs">Total in DB</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex-1 flex flex-col overflow-hidden m-4 bg-slate-900 rounded-2xl border border-slate-700">
+            <!-- Log tab bar -->
+            <div class="flex items-center border-b border-slate-700 flex-shrink-0 px-2 pt-1 gap-1">
+              <template x-for="tab in [{id:'main',label:'⚡ Main',color:'text-indigo-400'},{id:'detail',label:'📋 Details',color:'text-teal-400'},{id:'website',label:'🌐 Website',color:'text-emerald-400'},{id:'reviews',label:'⭐ Reviews',color:'text-amber-400'}]" :key="tab.id">
+                <button @click="activeLog=tab.id; logBadges[tab.id]=0"
+                  :class="activeLog===tab.id ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'"
+                  class="relative text-xs px-3 py-1.5 rounded-t-lg font-medium transition-colors">
+                  <span x-text="tab.label"></span>
+                  <span x-show="logBadges[tab.id]>0"
+                    class="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center"
+                    x-text="logBadges[tab.id]"></span>
+                </button>
+              </template>
+              <div class="flex-1"></div>
+              <button @click="logs[activeLog]=[]" class="text-slate-600 hover:text-slate-400 text-xs pb-1">clear</button>
+            </div>
+
+            <!-- Log content per tab -->
+            <template x-for="tab in ['main','detail','website','reviews']" :key="tab">
+              <div :id="'log-box-' + tab" x-show="activeLog===tab" class="flex-1 overflow-auto p-4 space-y-0.5">
+                <div x-show="logs[tab].length===0" class="log-line text-slate-600">
+                  <span x-text="tab==='main'?'Start a scrape to see logs here...':tab==='detail'?'Use Re-scrape Details to see logs here...':tab==='website'?'Use Scrape Websites to see logs here...':'Use Scrape Reviews to see logs here...'"></span>
+                </div>
+                <template x-for="line in logs[tab]" :key="line.id">
+                  <div class="log-line"
+                    :class="{'text-green-400':line.type==='lead','text-red-400':line.type==='error','text-yellow-300':line.type==='done'||line.type==='start','text-slate-400':line.type==='log','text-orange-400':line.type==='stopping'}"
+                    x-text="line.message"></div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════
+         LEADS
+    ══════════════════════════════════════════════════════ -->
+    <div x-show="section==='leads'" class="p-5">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-xl font-bold">Leads</h2>
+          <p class="text-slate-500 text-sm">All scraped businesses — filter by website status, category, zip, and more.</p>
+        </div>
+        <div class="flex gap-2">
+          <a href="/api/leads/export.csv" class="text-sm bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium px-3 py-1.5 rounded-lg shadow-sm">⬇ CSV</a>
+          <a href="/api/leads/export.vcf" class="text-sm bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium px-3 py-1.5 rounded-lg shadow-sm">📱 Contacts (VCF)</a>
+          <button @click="loadLeads()" class="text-sm bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium px-3 py-1.5 rounded-lg shadow-sm">↺ Refresh</button>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm mb-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <input x-model="filter.q" type="text" placeholder="Search name, phone, address..."
+            class="border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 flex-1 min-w-48">
+          <input x-model="filter.zip" type="text" placeholder="Zip..."
+            class="border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-28">
+          <input x-model="filter.cat" type="text" placeholder="Category..."
+            class="border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-36">
+          <!-- Website filter -->
+          <select x-model="filter.website" class="border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+            <option value="all">All businesses</option>
+            <option value="no">No website only</option>
+            <option value="yes">Has website only</option>
+          </select>
+          <!-- Phone filter -->
+          <select x-model="filter.phone" class="border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+            <option value="all">All phones</option>
+            <option value="yes">Has phone</option>
+            <option value="no">No phone</option>
+          </select>
+          <select x-model.number="pageSize" class="border border-slate-200 rounded-xl px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+            <option :value="50">50/page</option>
+            <option :value="100">100/page</option>
+            <option :value="250">250/page</option>
+            <option :value="500">500/page</option>
+          </select>
+          <span class="text-slate-400 text-sm ml-auto" x-text="sortedLeads.length+' / '+leads.length+' leads'"></span>
+        </div>
+
+        <!-- Bulk action bar -->
+        <div x-show="selected.size>0" class="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center gap-3">
+          <span class="text-sm font-semibold text-slate-700" x-text="selected.size+' selected'"></span>
+          <!-- Master Scrape All button -->
+          <button @click="masterScrapeAll()"
+            :disabled="masterScraping||detailScraping||websiteScraping||reviewScraping"
+            class="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-1.5 px-4 rounded-xl text-sm flex items-center gap-2 ring-2 ring-indigo-300">
+            🚀 <span x-text="masterScraping?'Scraping all...':'Scrape All ('+selected.size+')'"></span>
+          </button>
+          <div class="w-px h-6 bg-slate-200"></div>
+          <select x-model="activeTemplate"
+            class="border border-slate-200 rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+            <template x-for="(t, key) in templates" :key="key">
+              <option :value="key" x-text="t.name"></option>
+            </template>
+          </select>
+          <button @click="bulkSms()" :disabled="sending||masterScraping"
+            class="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm flex items-center gap-2">
+            📱 <span x-text="sending?'Sending...':'Send SMS ('+selected.size+')'"></span>
+          </button>
+          <button @click="bulkScrapeReviews()" :disabled="reviewScraping||detailScraping||websiteScraping||masterScraping"
+            class="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
+            <span x-text="reviewScraping?'Scraping reviews...':'Scrape Reviews ('+selected.size+')'"></span>
+          </button>
+          <button @click="bulkScrapeDetails()" :disabled="detailScraping||reviewScraping||websiteScraping||sending||masterScraping"
+            class="bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
+            <span x-text="detailScraping?'Scraping details...':'Re-scrape Details ('+selected.size+')'"></span>
+          </button>
+          <button @click="bulkScrapeWebsites()" :disabled="websiteScraping||detailScraping||reviewScraping||masterScraping"
+            class="bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
+            <span x-text="websiteScraping?'Scraping websites...':'🌐 Scrape Websites ('+selected.size+')'"></span>
+          </button>
+          <button @click="openFormSender()" :disabled="formSending||masterScraping"
+            class="bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
+            <span x-text="formSending?'Submitting forms...':'📋 Submit Forms ('+selected.size+')'"></span>
+          </button>
+          <label class="flex items-center gap-1 text-xs text-slate-500">
+            Review workers
+            <input x-model.number="form.reviewWorkers" type="number" min="1" max="1"
+              class="w-14 border border-slate-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400">
+          </label>
+          <button @click="bulkDelete()" :disabled="masterScraping"
+            class="bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
+            🗑 Delete (<span x-text="selected.size"></span>)
+          </button>
+          <button @click="deleteAll()" :disabled="masterScraping"
+            class="bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
+            🗑 Delete All (<span x-text="leads.length"></span>)
+          </button>
+          <button @click="selected=new Set()" class="text-slate-400 hover:text-slate-600 text-sm">Deselect all</button>
+        </div>
+      </div>
+
+      <!-- SMS results -->
+      <div x-show="results.length>0" class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm mb-3">
+        <div class="flex items-center justify-between mb-2">
+          <h4 class="font-semibold text-slate-700 text-sm">SMS Results</h4>
+          <button @click="results=[]" class="text-xs text-slate-400 hover:text-slate-600">Dismiss</button>
+        </div>
+        <template x-for="r in results" :key="r.id">
+          <div class="text-sm py-0.5" x-text="(r.success?'✅':'❌')+' Lead #'+r.id+': '+(r.success?'Sent':''+r.error)"></div>
+        </template>
+      </div>
+
+      <!-- Table -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <table class="w-full text-sm resizable-table">
+          <thead class="bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th class="px-3 py-3 w-10"><input type="checkbox" @change="toggleAll($event)" class="rounded border-slate-300 text-indigo-600"></th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('name')" class="hover:text-indigo-600">Business <span x-text="sortIcon('name')"></span></button></th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('phone')" class="hover:text-indigo-600">Phone(s) <span x-text="sortIcon('phone')"></span></button></th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600">Email(s)</th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('address')" class="hover:text-indigo-600">Address <span x-text="sortIcon('address')"></span></button></th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('category')" class="hover:text-indigo-600">Category <span x-text="sortIcon('category')"></span></button></th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('zip')" class="hover:text-indigo-600">Zip <span x-text="sortIcon('zip')"></span></button></th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('rating')" class="hover:text-indigo-600">Rating <span x-text="sortIcon('rating')"></span></button></th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('review_count')" class="hover:text-indigo-600">Reviews <span x-text="sortIcon('review_count')"></span></button></th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('has_website')" class="hover:text-indigo-600">Website <span x-text="sortIcon('has_website')"></span></button></th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600">Scraped With</th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('id')" class="hover:text-indigo-600">Actions <span x-text="sortIcon('id')"></span></button></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <template x-if="sortedLeads.length===0">
+              <tr><td colspan="12" class="px-4 py-10 text-center text-slate-400">No leads match — try changing filters or run the scraper.</td></tr>
+            </template>
+            <template x-for="lead in visible" :key="lead.id">
+              <tr :class="selected.has(lead.id)?'bg-indigo-50':'hover:bg-slate-50/70'" class="transition-colors">
+                <td class="px-3 py-3"><input type="checkbox" :checked="selected.has(lead.id)" @change="toggle(lead.id)" class="rounded border-slate-300 text-indigo-600"></td>
+                <td class="px-3 py-3" style="min-width:140px">
+                  <div class="font-semibold text-slate-800 text-xs" x-text="lead.name"></div>
+                  <div class="text-xs text-slate-400" x-text="'#'+lead.id"></div>
+                </td>
+                <!-- Phone(s): all unique normalized phones -->
+                <td class="px-3 py-3 text-xs" style="min-width:130px">
+                  <template x-if="leadPhones(lead).length === 0">
+                    <span class="text-slate-300 font-mono">—</span>
+                  </template>
+                  <template x-for="(p, i) in leadPhones(lead)" :key="p">
+                    <a :href="'tel:'+p"
+                      :class="i===0 ? 'font-mono text-slate-700 hover:text-indigo-600' : 'font-mono text-teal-600 hover:underline'"
+                      class="block hover:underline" x-text="p"></a>
+                  </template>
+                </td>
+                <!-- Email(s) from website scrape -->
+                <td class="px-3 py-3 text-xs" style="min-width:140px">
+                  <template x-if="!lead.website_emails || lead.website_emails === '[]'">
+                    <span class="text-slate-300">—</span>
+                  </template>
+                  <template x-if="lead.website_emails && lead.website_emails !== '[]'">
+                    <div>
+                      <template x-for="email in JSON.parse(lead.website_emails)" :key="email">
+                        <a :href="'mailto:'+email" class="block text-teal-700 hover:underline font-mono truncate" x-text="email"></a>
+                      </template>
+                    </div>
+                  </template>
+                </td>
+                <td class="px-3 py-3 text-slate-500" style="min-width:120px">
+                  <div class="truncate text-xs" x-text="lead.address||'—'"></div>
+                  <div class="text-xs text-slate-400 font-mono" x-text="lead.zip"></div>
+                </td>
+                <td class="px-3 py-3"><span class="bg-indigo-50 text-indigo-700 text-xs px-2 py-0.5 rounded-full font-medium" x-text="lead.category||'—'"></span></td>
+                <td class="px-3 py-3 font-mono text-xs text-slate-600" x-text="lead.zip"></td>
+                <td class="px-3 py-3 text-xs text-slate-700 font-semibold" x-text="lead.rating||'—'"></td>
+                <td class="px-3 py-3 text-xs text-slate-600" x-text="lead.review_count!=null?lead.review_count.toLocaleString():'—'"></td>
+                <td class="px-3 py-3 text-xs">
+                  <template x-if="lead.has_website===1">
+                    <a :href="lead.website_url && !lead.website_url.startsWith('http') ? 'https://' + lead.website_url : lead.website_url" target="_blank" class="text-blue-600 hover:underline">🌐 Visit</a>
+                  </template>
+                  <template x-if="lead.has_website!==1">
+                    <span class="text-slate-400">📵 none</span>
+                  </template>
+                </td>
+                <!-- Scrape badges -->
+                <td class="px-3 py-3">
+                  <div class="flex flex-wrap gap-1">
+                    <span :class="lead.scrape_method==='detail'?'bg-violet-100 text-violet-700':'bg-blue-100 text-blue-700'"
+                      class="text-xs px-1.5 py-0.5 rounded font-mono"
+                      x-text="lead.scrape_method==='detail'?'🔍 detail':'⚡ fast'"></span>
+                    <span x-show="lead.details_scraped"
+                      class="text-xs bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded font-mono">📋 details</span>
+                    <span x-show="lead.website_scrape_status==='done'"
+                      class="text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-mono">🌐 website</span>
+                    <span x-show="lead.review_scrape_status==='done'"
+                      class="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-mono">⭐ reviews</span>
+                  </div>
+                </td>
+                <td class="px-3 py-3">
+                  <div class="flex items-center gap-2">
+                    <a :href="lead.maps_url" target="_blank" class="text-indigo-600 hover:text-indigo-800 text-xs font-medium">Maps↗</a>
+                    <button @click="singleSms(lead.id)" class="text-green-600 hover:text-green-800 text-xs font-medium">SMS</button>
+                    <button @click="openDetails(lead)" class="text-violet-500 hover:text-violet-700 text-xs font-medium">Details</button>
+                    <button @click="del(lead.id)" class="text-red-400 hover:text-red-600 text-xs font-medium">Del</button>
+                  </div>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <div x-show="sortedLeads.length>0" class="flex items-center justify-between bg-white border border-slate-200 border-t-0 rounded-b-2xl px-4 py-3 text-sm">
+        <div class="text-slate-500" x-text="'Showing '+pageStart+'-'+pageEnd+' of '+sortedLeads.length"></div>
+        <div class="flex items-center gap-2">
+          <button @click="leadPage=1" :disabled="leadPage===1" class="border border-slate-200 rounded-lg px-3 py-1 disabled:opacity-40">First</button>
+          <button @click="leadPage=Math.max(1,leadPage-1)" :disabled="leadPage===1" class="border border-slate-200 rounded-lg px-3 py-1 disabled:opacity-40">Prev</button>
+          <span class="text-slate-500" x-text="'Page '+leadPage+' / '+totalPages"></span>
+          <button @click="leadPage=Math.min(totalPages,leadPage+1)" :disabled="leadPage===totalPages" class="border border-slate-200 rounded-lg px-3 py-1 disabled:opacity-40">Next</button>
+          <button @click="leadPage=totalPages" :disabled="leadPage===totalPages" class="border border-slate-200 rounded-lg px-3 py-1 disabled:opacity-40">Last</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════
+         SMS TEMPLATES
+    ══════════════════════════════════════════════════════ -->
+    <div x-show="section==='templates'" class="p-5 max-w-3xl">
+      <h2 class="text-xl font-bold mb-1">SMS Templates</h2>
+      <p class="text-slate-500 text-sm mb-3">
+        Use <code class="bg-slate-100 px-1 rounded text-indigo-600">{name}</code> for business name, <code class="bg-slate-100 px-1 rounded text-indigo-600">{location}</code> for city.
+      </p>
+
+      <!-- Test SMS bar -->
+      <div class="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 mb-5 flex items-center gap-3 flex-wrap">
+        <span class="text-sm font-semibold text-indigo-700 whitespace-nowrap">📲 Send test to:</span>
+        <input x-model="testPhone" type="text" placeholder="+13016612210"
+          class="border border-indigo-200 rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-44 bg-white">
+        <span class="text-sm text-slate-500 whitespace-nowrap">with sample:</span>
+        <input x-model="testName" type="text" placeholder="Joe's Plumbing"
+          class="border border-indigo-200 rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-36 bg-white">
+        <input x-model="testLocation" type="text" placeholder="Bethesda"
+          class="border border-indigo-200 rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-28 bg-white">
+        <span class="text-xs text-slate-400 flex-1 italic hidden sm:block"
+          x-text="testPreview(activeTemplate)">
+        </span>
+      </div>
+
+      <template x-for="(t, key) in templates" :key="key">
+        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm mb-4">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <input x-model="templates[key].name" type="text"
+                class="font-semibold text-slate-800 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-400 focus:outline-none px-1 py-0.5 text-sm">
+              <span class="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded font-mono" x-text="key"></span>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-slate-400" x-text="t.body.replace(/\{name\}/g,'').length+' chars'"></span>
+              <button @click="sendTestSms(key)"
+                class="text-xs bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-semibold px-2 py-1 rounded-lg">
+                📲 Test
+              </button>
+              <button x-show="Object.keys(templates).length>1" @click="deleteTemplate(key)"
+                class="text-xs text-red-400 hover:text-red-600">Delete</button>
+            </div>
+          </div>
+          <textarea x-model="templates[key].body" rows="4"
+            class="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none font-mono bg-slate-50"></textarea>
+          <div class="mt-2 p-3 bg-slate-50 rounded-xl border border-slate-100">
+            <div class="text-xs text-slate-400 mb-1">Preview:</div>
+            <div class="text-xs text-slate-700 italic" x-text="previewTemplate(t.body)"></div>
+          </div>
+        </div>
+      </template>
+
+      <div class="bg-white rounded-2xl border border-dashed border-slate-300 p-5">
+        <h3 class="font-semibold text-slate-600 mb-3 text-sm">+ New Template</h3>
+        <div class="space-y-3">
+          <input x-model="newTpl.name" type="text" placeholder="Template name (e.g. Follow-up)"
+            class="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+          <textarea x-model="newTpl.body" rows="3"
+            placeholder="Hi {name}, ..."
+            class="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none bg-slate-50"></textarea>
+          <div class="flex items-center gap-3">
+            <button @click="addTemplate()"
+              :disabled="!newTpl.name||!newTpl.body"
+              class="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-semibold py-2 px-4 rounded-xl text-sm">
+              Add Template
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════
+         SMS QUEUE
+    ══════════════════════════════════════════════════════ -->
+    <div x-show="section==='queue'" class="p-5">
+
+      <!-- Scheduler -->
+      <div class="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4 flex items-center gap-4 flex-wrap">
+        <span class="text-sm font-semibold text-amber-800 whitespace-nowrap">⏰ Auto-send at:</span>
+        <input x-model="scheduleTime" type="time"
+          class="border border-amber-200 rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white">
+        <div class="flex gap-2">
+          <template x-for="(d, i) in ['Su','Mo','Tu','We','Th','Fr','Sa']" :key="i">
+            <button @click="toggleScheduleDay(i)"
+              :class="scheduleDays.includes(i) ? 'bg-amber-500 text-white' : 'bg-white text-slate-500 border border-slate-200'"
+              class="text-xs font-semibold w-8 h-8 rounded-lg" x-text="d"></button>
+          </template>
+        </div>
+        <button @click="saveSchedule()"
+          class="bg-amber-500 hover:bg-amber-600 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
+          Save Schedule
+        </button>
+        <button x-show="scheduleTime" @click="clearSchedule()"
+          class="text-xs text-amber-600 hover:text-amber-800">✕ Cancel</button>
+        <span x-show="scheduleTime" class="text-xs text-amber-700"
+          x-text="'Will auto-send pending queue at ' + scheduleTime + ' on selected days'"></span>
+        <span x-show="!scheduleTime" class="text-xs text-amber-600">No schedule set — queue sends manually only</span>
+      </div>
+
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-xl font-bold">SMS Queue</h2>
+          <p class="text-slate-500 text-sm">Messages waiting to be sent. Hit Send Now when your phone is connected.</p>
+        </div>
+        <div class="flex gap-2 items-center">
+          <span class="text-xs text-slate-400" x-text="smsQueue.filter(q=>q.status==='pending').length + ' pending · ' + smsQueue.filter(q=>q.status==='sent').length + ' sent · ' + smsQueue.filter(q=>q.status==='failed').length + ' failed'"></span>
+          <button @click="loadQueue()" class="text-sm bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium px-3 py-1.5 rounded-lg shadow-sm">↺ Refresh</button>
+          <button @click="sendQueue(false)" :disabled="queueSending || !smsQueue.some(q=>q.status==='pending')"
+            class="bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
+            <span x-text="queueSending ? 'Sending...' : '📤 Send Now (' + pendingCount() + ')'"></span>
+          </button>
+          <button @click="sendQueue(true)" :disabled="queueSending || !smsQueue.some(q=>q.status==='pending')"
+            class="bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white font-semibold py-1.5 px-4 rounded-xl text-sm text-xs">
+            Force Send
+          </button>
+          <button @click="clearQueue('sent')" class="text-xs text-slate-400 hover:text-slate-600 px-2">Clear Sent</button>
+          <button @click="clearQueue()" class="text-xs text-red-400 hover:text-red-600 px-2">Clear All</button>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase tracking-wide">
+            <tr>
+              <th class="px-4 py-3 text-left">#</th>
+              <th class="px-4 py-3 text-left">Business</th>
+              <th class="px-4 py-3 text-left">Phone</th>
+              <th class="px-4 py-3 text-left">Template</th>
+              <th class="px-4 py-3 text-left">Status</th>
+              <th class="px-4 py-3 text-left">Queued at</th>
+              <th class="px-4 py-3 text-left">Message</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <template x-if="smsQueue.length===0">
+              <tr><td colspan="7" class="px-4 py-10 text-center text-slate-400">Queue is empty — select leads and hit Send SMS to add messages.</td></tr>
+            </template>
+            <template x-for="item in smsQueue" :key="item.id">
+              <tr :class="item.status==='sent'?'bg-green-50':item.status==='failed'?'bg-red-50':''">
+                <td class="px-4 py-3 text-slate-400 text-xs" x-text="'#'+item.id"></td>
+                <td class="px-4 py-3 font-semibold text-slate-700 text-xs" x-text="item.name||'—'"></td>
+                <td class="px-4 py-3 font-mono text-xs text-slate-600" x-text="item.phone||'—'"></td>
+                <td class="px-4 py-3 text-xs text-slate-500" x-text="item.template"></td>
+                <td class="px-4 py-3">
+                  <span :class="{
+                    'bg-yellow-100 text-yellow-700': item.status==='pending',
+                    'bg-green-100 text-green-700': item.status==='sent',
+                    'bg-red-100 text-red-700': item.status==='failed'
+                  }" class="text-xs font-semibold px-2 py-0.5 rounded-full" x-text="item.status.toUpperCase()"></span>
+                  <div x-show="item.error" class="text-xs text-red-500 mt-0.5" x-text="item.error"></div>
+                </td>
+                <td class="px-4 py-3 text-xs text-slate-400 whitespace-nowrap" x-text="item.created_at.replace('T',' ').slice(0,16)"></td>
+                <td class="px-4 py-3 text-xs text-slate-500 max-w-xs truncate" x-text="item.message||'(use template)'"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════
+         OUTREACH LOG
+    ══════════════════════════════════════════════════════ -->
+    <div x-show="section==='outreach'" class="p-5">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <h2 class="text-xl font-bold">Outreach Log</h2>
+          <p class="text-slate-500 text-sm">Full TCPA audit trail — every field, every event.</p>
+        </div>
+        <div class="flex gap-2">
+          <span class="text-xs text-slate-400 self-center" x-text="outreach.length + ' records'"></span>
+          <button @click="loadOutreach()" class="text-sm bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium px-3 py-1.5 rounded-lg shadow-sm">↺ Refresh</button>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="flex gap-2 mb-3 flex-wrap">
+        <input x-model="outreachFilter.q" type="text" placeholder="Search name, phone, message..."
+          class="border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-64">
+        <select x-model="outreachFilter.channel" class="border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+          <option value="">All channels</option>
+          <option value="sms">SMS</option>
+          <option value="email">Email</option>
+        </select>
+        <input x-model="outreachFilter.zip" type="text" placeholder="Filter zip..."
+          class="border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-32">
+        <button @click="outreachFilter={q:'',channel:'',zip:''}" class="text-xs text-slate-400 hover:text-slate-600 px-2">✕ Clear</button>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <table class="w-full text-xs">
+          <thead class="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wide">
+            <tr>
+              <th class="px-3 py-3 text-left font-semibold">ID</th>
+              <th class="px-3 py-3 text-left font-semibold">Sent at</th>
+              <th class="px-3 py-3 text-left font-semibold">Lead ID</th>
+              <th class="px-3 py-3 text-left font-semibold">Business</th>
+              <th class="px-3 py-3 text-left font-semibold">Phone</th>
+              <th class="px-3 py-3 text-left font-semibold">Zip</th>
+              <th class="px-3 py-3 text-left font-semibold">Channel</th>
+              <th class="px-3 py-3 text-left font-semibold">Opted Out</th>
+              <th class="px-3 py-3 text-left font-semibold">Updated at</th>
+              <th class="px-3 py-3 text-left font-semibold">Message</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100 font-mono">
+            <template x-if="filteredOutreach.length===0">
+              <tr><td colspan="10" class="px-4 py-10 text-center text-slate-400 font-sans">No records found.</td></tr>
+            </template>
+            <template x-for="log in filteredOutreach" :key="log.id">
+              <tr class="hover:bg-slate-50 align-top" :class="log.opted_out?'bg-red-50':''">
+                <td class="px-3 py-2 text-slate-300" x-text="'#'+log.id"></td>
+                <td class="px-3 py-2 text-slate-500 whitespace-nowrap" x-text="log.created_at.replace('T',' ')"></td>
+                <td class="px-3 py-2 text-indigo-400" x-text="'#'+log.lead_id"></td>
+                <td class="px-3 py-2 font-semibold text-slate-700 font-sans whitespace-nowrap" x-text="log.name"></td>
+                <td class="px-3 py-2 text-slate-600" x-text="log.phone"></td>
+                <td class="px-3 py-2 text-slate-500" x-text="log.zip"></td>
+                <td class="px-3 py-2">
+                  <span :class="log.channel==='sms'?'bg-green-100 text-green-700':'bg-blue-100 text-blue-700'"
+                    class="text-xs font-semibold px-2 py-0.5 rounded-full font-sans" x-text="log.channel.toUpperCase()"></span>
+                </td>
+                <td class="px-3 py-2">
+                  <span x-show="log.opted_out" class="text-red-500 font-semibold">⛔ YES</span>
+                  <span x-show="!log.opted_out" class="text-slate-300">—</span>
+                </td>
+                <td class="px-3 py-2 text-slate-400 whitespace-nowrap" x-text="log.updated_at ? log.updated_at.replace('T',' ') : '—'"></td>
+                <td class="px-3 py-2 text-slate-600 max-w-xs">
+                  <div x-data="{expanded:false}">
+                    <div :class="expanded?'':'line-clamp-2'" x-text="log.message" class="font-sans leading-relaxed"></div>
+                    <button x-show="log.message && log.message.length>100" @click="expanded=!expanded"
+                      class="text-indigo-400 hover:text-indigo-600 text-xs mt-0.5 font-sans" x-text="expanded?'▲ collapse':'▼ expand'"></button>
+                  </div>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Form Sender Modal -->
+<div x-show="formModal.open" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6">
+    <h3 class="text-lg font-bold mb-1">Submit Contact Forms</h3>
+    <p class="text-slate-500 text-sm mb-4">This info will be filled into the contact forms on each business website.</p>
+    <div class="space-y-3">
+      <input x-model="formModal.sender.name" placeholder="Your name *" type="text"
+        class="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+      <input x-model="formModal.sender.email" placeholder="Your email *" type="email"
+        class="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+      <input x-model="formModal.sender.phone" placeholder="Your phone (optional)" type="tel"
+        class="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+      <textarea x-model="formModal.sender.message" rows="4" placeholder="Message * — use {name} for business name"
+        class="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"></textarea>
+      <div class="text-xs text-slate-400 italic" x-text="'Preview: ' + previewTemplate(formModal.sender.message)"></div>
+      <p class="text-xs text-amber-600">⚠ Only leads with a detected contact form will be submitted. Run <strong>Scrape Websites</strong> first.</p>
+    </div>
+    <div class="flex gap-3 mt-5">
+      <button @click="bulkSubmitForms()"
+        :disabled="!formModal.sender.name||!formModal.sender.email||!formModal.sender.message"
+        class="flex-1 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white font-semibold py-2 px-4 rounded-xl text-sm">
+        Submit to <span x-text="selected.size"></span> lead(s)
+      </button>
+      <button @click="formModal.open=false" class="px-4 py-2 text-slate-500 hover:text-slate-700 text-sm">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Details + Reviews drawer -->
+<div x-show="detailPanel.open"
+  class="fixed inset-y-0 right-0 w-[520px] bg-white shadow-2xl border-l border-slate-200 flex flex-col z-40 transition-transform duration-200"
+  :class="detailPanel.open ? 'translate-x-0' : 'translate-x-full'">
+
+  <!-- Header -->
+  <div class="px-5 py-4 border-b border-slate-200 flex-shrink-0">
+    <div class="flex items-start justify-between">
+      <div class="flex-1 min-w-0 pr-3">
+        <h3 class="font-bold text-slate-800 truncate" x-text="detailPanel.lead.name"></h3>
+        <div class="flex items-center gap-2 mt-1 flex-wrap">
+          <span class="text-xs text-slate-400" x-text="detailPanel.lead.category"></span>
+          <span x-show="detailPanel.lead.rating" class="text-xs text-yellow-500 font-semibold" x-text="'⭐ '+detailPanel.lead.rating"></span>
+          <span x-show="detailPanel.lead.review_count" class="text-xs text-slate-400" x-text="'('+detailPanel.lead.review_count+' reviews)'"></span>
+          <span x-show="detailPanel.lead.price_level" class="text-xs text-slate-500 font-bold" x-text="detailPanel.lead.price_level"></span>
+        </div>
+      </div>
+      <button @click="detailPanel.open=false" class="text-slate-400 hover:text-slate-600 text-xl leading-none flex-shrink-0">✕</button>
+    </div>
+    <!-- Tabs -->
+    <div class="flex mt-3 border-b border-slate-200">
+      <button @click="detailPanel.tab='info'" :class="detailPanel.tab==='info'?'border-b-2 border-indigo-600 text-indigo-600':'text-slate-400'" class="px-4 py-2 text-xs font-semibold">Info & Hours</button>
+      <button @click="detailPanel.tab='reviews'" :class="detailPanel.tab==='reviews'?'border-b-2 border-indigo-600 text-indigo-600':'text-slate-400'" class="px-4 py-2 text-xs font-semibold">
+        Reviews <span x-show="detailPanel.reviews.length" class="ml-1 bg-slate-100 text-slate-600 rounded-full px-1.5" x-text="detailPanel.reviews.length"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Tab: Info -->
+  <div x-show="detailPanel.tab==='info'" class="flex-1 overflow-auto p-4 space-y-4">
+    <div x-show="detailPanel.loadingDetails" class="text-center py-10 text-slate-400 text-sm">Opening browser... takes 15–30 seconds.</div>
+    <div x-show="!detailPanel.lead.details_scraped && !detailPanel.loadingDetails" class="text-center py-6 text-slate-400 text-sm">
+      No full details saved for this business yet.
+    </div>
+
+    <!-- Contact quick row -->
+    <div class="bg-slate-50 rounded-xl p-3 space-y-1">
+      <div x-show="detailPanel.lead.phone" class="flex items-center gap-2 text-sm"><span class="text-slate-400">📞</span><span class="font-mono text-slate-700" x-text="normalizePhone(detailPanel.lead.phone)"></span></div>
+      <div x-show="detailPanel.lead.address" class="flex items-center gap-2 text-sm"><span class="text-slate-400">📍</span><span class="text-slate-700" x-text="detailPanel.lead.address"></span></div>
+      <div x-show="detailPanel.lead.zip" class="flex items-center gap-2 text-sm"><span class="text-slate-400">🗺</span><span class="text-slate-500" x-text="detailPanel.lead.zip"></span></div>
+      <div x-show="detailPanel.lead.plus_code" class="flex items-center gap-2 text-sm"><span class="text-slate-400">🔲</span><span class="text-slate-500 text-xs font-mono" x-text="detailPanel.lead.plus_code"></span></div>
+      <div x-show="detailPanel.lead.open_now" class="flex items-center gap-2 text-sm">
+        <span class="text-slate-400">🕐</span>
+        <span :class="detailPanel.lead.open_now==='Open'?'text-green-600 font-semibold':'text-red-500 font-semibold'" x-text="detailPanel.lead.open_now"></span>
+      </div>
+      <div x-show="detailPanel.lead.price_level" class="flex items-center gap-2 text-sm"><span class="text-slate-400">💰</span><span class="text-slate-600 font-bold" x-text="detailPanel.lead.price_level"></span></div>
+    </div>
+
+    <!-- Website / maps / menu / booking links -->
+    <div class="flex flex-wrap gap-2">
+      <a x-show="detailPanel.lead.maps_url" :href="detailPanel.lead.maps_url" target="_blank" class="text-xs bg-indigo-50 text-indigo-700 font-semibold px-3 py-1.5 rounded-lg hover:bg-indigo-100">🗺 Maps</a>
+      <a x-show="detailPanel.lead.has_website && detailPanel.lead.website_url" :href="detailPanel.lead.website_url && !detailPanel.lead.website_url.startsWith('http') ? 'https://' + detailPanel.lead.website_url : detailPanel.lead.website_url" target="_blank" class="text-xs bg-blue-50 text-blue-700 font-semibold px-3 py-1.5 rounded-lg hover:bg-blue-100">🌐 Website</a>
+      <a x-show="detailPanel.lead.menu_url" :href="detailPanel.lead.menu_url" target="_blank" class="text-xs bg-orange-50 text-orange-700 font-semibold px-3 py-1.5 rounded-lg hover:bg-orange-100">🍽 Menu</a>
+      <a x-show="detailPanel.lead.booking_url" :href="detailPanel.lead.booking_url" target="_blank" class="text-xs bg-green-50 text-green-700 font-semibold px-3 py-1.5 rounded-lg hover:bg-green-100">📅 Book</a>
+    </div>
+
+    <!-- Social links -->
+    <div x-show="detailSocialLinks.length > 0">
+      <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Social Media</div>
+      <div class="flex flex-wrap gap-2">
+        <template x-for="s in detailSocialLinks" :key="s.platform">
+          <a :href="s.url" target="_blank" class="text-xs bg-slate-100 text-slate-700 font-medium px-3 py-1.5 rounded-lg hover:bg-slate-200" x-text="s.platform"></a>
+        </template>
+      </div>
+    </div>
+
+    <!-- Description -->
+    <div x-show="detailPanel.lead.description">
+      <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">About</div>
+      <p class="text-sm text-slate-700 leading-relaxed bg-slate-50 rounded-xl p-3" x-text="detailPanel.lead.description"></p>
+    </div>
+
+    <!-- Hours -->
+    <div x-show="Object.keys(detailHours).length > 0">
+      <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Business Hours</div>
+      <div class="bg-slate-50 rounded-xl overflow-hidden border border-slate-100">
+        <template x-for="[day, time] in Object.entries(detailHours)" :key="day">
+          <div class="flex items-center justify-between px-3 py-1.5 border-b border-slate-100 last:border-0">
+            <span class="text-xs font-semibold text-slate-700 w-24" x-text="day"></span>
+            <span class="text-xs text-slate-500" x-text="time"></span>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Service area -->
+    <div x-show="detailPanel.lead.service_area">
+      <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Service Area</div>
+      <p class="text-sm text-slate-700 bg-slate-50 rounded-xl p-3" x-text="detailPanel.lead.service_area"></p>
+    </div>
+
+    <!-- Website Scrape Data -->
+    <div x-show="detailPanel.lead.website_scrape_status === 'done'" class="border border-teal-100 bg-teal-50 rounded-2xl p-4 space-y-3">
+      <div class="text-xs font-semibold text-teal-700 uppercase tracking-wide">🌐 From Their Website</div>
+
+      <!-- Emails -->
+      <div x-show="websiteEmails().length > 0">
+        <div class="text-xs font-medium text-slate-500 mb-1">Emails found</div>
+        <div class="flex flex-wrap gap-1.5">
+          <template x-for="email in websiteEmails()" :key="email">
+            <a :href="'mailto:' + email" class="text-xs bg-white border border-teal-200 text-teal-700 px-2 py-1 rounded-lg hover:bg-teal-100 font-mono" x-text="email"></a>
+          </template>
+        </div>
+      </div>
+
+      <!-- Extra phones -->
+      <div x-show="websitePhones().length > 0">
+        <div class="text-xs font-medium text-slate-500 mb-1">Phones found</div>
+        <div class="flex flex-wrap gap-1.5">
+          <template x-for="phone in websitePhones()" :key="phone">
+            <a :href="'tel:' + phone" class="text-xs bg-white border border-teal-200 text-teal-700 px-2 py-1 rounded-lg hover:bg-teal-100 font-mono" x-text="phone"></a>
+          </template>
+        </div>
+      </div>
+
+      <!-- Contact form -->
+      <div x-show="detailPanel.lead.website_contact_url">
+        <div class="text-xs font-medium text-slate-500 mb-1">Contact form</div>
+        <a :href="detailPanel.lead.website_contact_url" target="_blank"
+          class="text-xs text-blue-600 hover:underline break-all" x-text="detailPanel.lead.website_contact_url"></a>
+      </div>
+
+      <div x-show="websiteEmails().length === 0 && websitePhones().length === 0 && !detailPanel.lead.website_contact_url"
+        class="text-xs text-slate-400">No emails, phones or contact forms found on their site.</div>
+    </div>
+
+    <div x-show="detailPanel.lead.website_scrape_status === 'error'" class="text-xs text-red-400 bg-red-50 rounded-xl p-3">
+      Website scrape failed for this lead.
+    </div>
+
+    <!-- Amenities -->
+    <div x-show="detailAmenities.length > 0">
+      <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Features & Amenities</div>
+      <div class="flex flex-wrap gap-1.5">
+        <template x-for="a in detailAmenities" :key="a">
+          <span class="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-lg" x-text="a"></span>
+        </template>
+      </div>
+    </div>
+
+    <!-- Scrape Status & Metadata -->
+    <div class="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Record Info</div>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-400 w-28 flex-shrink-0">Lead ID</span>
+        <span class="font-mono text-slate-600" x-text="'#'+detailPanel.lead.id"></span>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-400 w-28 flex-shrink-0">Scrape method</span>
+        <span class="font-semibold px-2 py-0.5 rounded-full text-xs"
+          :class="detailPanel.lead.scrape_method==='detail'?'bg-indigo-100 text-indigo-700':'bg-slate-100 text-slate-600'"
+          x-text="detailPanel.lead.scrape_method||'fast'"></span>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-400 w-28 flex-shrink-0">Details scraped</span>
+        <span :class="detailPanel.lead.details_scraped?'text-green-600':'text-slate-400'"
+          x-text="detailPanel.lead.details_scraped?'Yes':'No'"></span>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-400 w-28 flex-shrink-0">Website scrape</span>
+        <span :class="detailPanel.lead.website_scrape_status==='done'?'text-green-600':detailPanel.lead.website_scrape_status==='error'?'text-red-500':'text-slate-400'"
+          x-text="detailPanel.lead.website_scrape_status||'Not scraped'"></span>
+        <span x-show="detailPanel.lead.website_scraped_at" class="text-slate-300 text-xs" x-text="detailPanel.lead.website_scraped_at"></span>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-400 w-28 flex-shrink-0">Review scrape</span>
+        <span :class="detailPanel.lead.review_scrape_status==='done'?'text-green-600':detailPanel.lead.review_scrape_status==='error'?'text-red-500':'text-slate-400'"
+          x-text="detailPanel.lead.review_scrape_status||'Not scraped'"></span>
+        <span x-show="detailPanel.lead.reviews_scraped_at" class="text-slate-300 text-xs" x-text="detailPanel.lead.reviews_scraped_at"></span>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-400 w-28 flex-shrink-0">Created</span>
+        <span class="text-slate-500" x-text="detailPanel.lead.created_at"></span>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-400 w-28 flex-shrink-0">Last updated</span>
+        <span class="text-slate-500" x-text="detailPanel.lead.updated_at"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab: Reviews -->
+  <div x-show="detailPanel.tab==='reviews'" class="flex-1 overflow-auto p-4 space-y-3">
+    <div x-show="detailPanel.loadingReviews" class="text-center py-10 text-slate-400 text-sm">Opening browser and scraping reviews... 15–30 seconds.</div>
+    <div x-show="detailPanel.reviews.length===0 && !detailPanel.loadingReviews" class="text-center py-10 text-slate-400 text-sm">
+      No reviews saved for this business yet.
+    </div>
+    <template x-for="r in detailPanel.reviews" :key="r.id">
+      <div class="bg-slate-50 rounded-xl p-4 border border-slate-100">
+        <div class="flex items-start justify-between mb-2">
+          <div>
+            <a x-show="r.reviewer_url" :href="r.reviewer_url" target="_blank" rel="noopener noreferrer"
+              class="font-semibold text-indigo-700 hover:text-indigo-900 hover:underline text-sm"
+              x-text="r.reviewer_name||'Anonymous'"></a>
+            <div x-show="!r.reviewer_url" class="font-semibold text-slate-800 text-sm" x-text="r.reviewer_name||'Anonymous'"></div>
+            <div class="text-xs text-slate-400 mt-0.5" x-text="r.review_date"></div>
+          </div>
+          <div class="flex items-center gap-0.5 flex-shrink-0 ml-2">
+            <template x-for="i in [1,2,3,4,5]" :key="i">
+              <span :class="i<=(r.reviewer_rating??0)?'text-yellow-400':'text-slate-200'" class="text-sm">★</span>
+            </template>
+          </div>
+        </div>
+        <p class="text-sm text-slate-700 leading-relaxed" x-text="r.review_text||'(no text)'"></p>
+      </div>
+    </template>
+  </div>
+</div>
+<div x-show="detailPanel.open" @click="detailPanel.open=false" class="fixed inset-0 bg-black/20 z-30"></div>
+
+<!-- Toast -->
+<div x-show="toast.show" x-transition class="fixed bottom-5 right-5 bg-slate-800 text-white text-sm font-medium px-4 py-3 rounded-xl shadow-xl z-50">
+  <span x-text="toast.msg"></span>
+</div>
+
+<script>
+const ALL_CATEGORIES = [
+  { label: '🏗️ Home Services', items: ['plumber','electrician','HVAC contractor','air conditioning repair','heating contractor','roofing contractor','roof repair','siding contractor','window installation','door installation','flooring contractor','tile contractor','carpet installer','drywall contractor','painter','house painter','fence contractor','deck builder','concrete contractor','masonry contractor','general contractor','home renovation','kitchen remodeler','bathroom remodeler','handyman','junk removal','moving company','pest control','lawn care','landscaping','tree service','irrigation service','pool cleaning','pool contractor','pressure washing'] },
+  { label: '🚗 Automotive', items: ['auto repair','mechanic','tire shop','oil change','brake shop','transmission repair','auto body shop','collision repair','car detailing','car wash','towing service','windshield repair','auto glass repair','used car dealer'] },
+  { label: '💇 Personal Services', items: ['barber shop','hair salon','nail salon','beauty salon','spa','massage therapist','eyelash salon','waxing salon','tattoo shop','piercing shop','makeup artist'] },
+  { label: '🏥 Health & Wellness', items: ['dentist','dental clinic','orthodontist','chiropractor','physical therapy','urgent care','medical clinic','family doctor','pediatrician','dermatologist','eye doctor','optometrist','pharmacy'] },
+  { label: '🍽️ Food & Beverage', items: ['restaurant','cafe','coffee shop','bakery','pizza','food truck','catering'] },
+  { label: '🏪 Retail', items: ['convenience store','grocery store','liquor store','smoke shop','vape shop','thrift store','clothing store','furniture store','electronics store','hardware store'] },
+  { label: '🧼 Cleaning', items: ['house cleaning','commercial cleaning','carpet cleaning','window cleaning','janitorial service'] },
+  { label: '🐶 Pet Services', items: ['pet grooming','dog grooming','pet boarding','dog daycare','veterinarian'] },
+  { label: '📦 Business Services', items: ['printing shop','sign shop','accounting','tax preparation','insurance agency','real estate agency','property management'] },
+];
+
+function app() {
+  return {
+    section: 'scraper',
+    theme: 'light',
+    scraping: false,
+    stopping: false,
+    sse: null,
+
+    // Zip manager
+    zipList: [],
+    selectedZips: new Set(),
+    zipInput: '',
+    zipSearch: '',
+
+    // Geo picker
+    geoOpen: true,
+    geoLoading: false,
+    geoStates: [],
+    geoState: '',
+    geoZipSearch: '',
+    geoStateEntries: [],
+    geoBrowseSelected: new Set(),
+
+    // Category picker
+    selectedCats: new Set(),
+    catSearch: '',
+
+    // Scraper
+    form: { maxPerZip: 500, workers: 1, reviewWorkers: 1, skipScraped: true },
+    logLines: [],
+    logs: { main: [], detail: [], website: [], reviews: [] },
+    activeLog: 'main',
+    logBadges: { main: 0, detail: 0, website: 0, reviews: 0 },
+    session: { jobs: 0, found: 0, saved: 0, duplicates: 0 },
+
+    // Leads
+    leads: [],
+    filter: { q: '', zip: '', cat: '', website: 'all', phone: 'all' },
+    sort: { key: 'created_at', dir: 'desc' },
+    leadPage: 1,
+    pageSize: 100,
+    selected: new Set(),
+    activeTemplate: 'standard',
+    sending: false,
+    reviewScraping: false,
+    detailScraping: false,
+    websiteScraping: false,
+    formSending: false,
+    masterScraping: false,
+    formModal: { open: false, sender: { name: '', email: '', phone: '', message: "Hi, I saw {name} on Google Maps and noticed you don't have a website. I build websites, apps and AI assistants. Happy to help if you're interested. Feel free to reply here or call me." } },
+    results: [],
+    outreach: [],
+    outreachFilter: { q: '', channel: '', zip: '' },
+    smsQueue: [],
+    queueSending: false,
+    testPhone: '',
+    testName: "Joe's Plumbing",
+    testLocation: 'Bethesda',
+    scheduleTime: '',
+    scheduleDays: [1,2,3,4,5],
+    stats: { total: 0 },
+    toast: { show: false, msg: '' },
+    detailPanel: { open: false, tab: 'info', lead: {}, reviews: [], loadingDetails: false, loadingReviews: false },
+
+    // SMS templates
+    templates: {
+      standard: { name: 'Standard', body: "Hey, saw {name} on Google Maps in {location} — looks like you don't have a website. I build websites and apps. Happy to help if you're interested. Reply STOP to opt out." },
+      short:    { name: 'Short',    body: "Hi {name}, I can build your business a website for a flat fee. Reply YES for details or STOP to opt out." },
+      followup: { name: 'Follow-up', body: "Hi {name}, just following up — I'd love to help you get online. A simple website can bring in new customers. Reply YES to chat or STOP to opt out." },
+    },
+    newTpl: { name: '', body: '' },
+
+    get nav() {
+      return [
+        { id: 'scraper',   icon: '🔍', label: 'Scraper' },
+        { id: 'leads',     icon: '📋', label: 'Leads',     onEnter: () => this.loadLeads() },
+        { id: 'templates', icon: '✏️', label: 'SMS Templates' },
+        { id: 'queue',     icon: '📤', label: 'SMS Queue',    onEnter: () => this.loadQueue() },
+        { id: 'outreach',  icon: '📱', label: 'Outreach Log', onEnter: () => this.loadOutreach() },
+      ];
+    },
+
+    get filteredZipList() {
+      if (!this.zipSearch) return this.zipList;
+      return this.zipList.filter(z => z.includes(this.zipSearch));
+    },
+
+    get filteredCatGroups() {
+      if (!this.catSearch) return ALL_CATEGORIES;
+      const q = this.catSearch.toLowerCase();
+      return ALL_CATEGORIES.map(g => ({ ...g, items: g.items.filter(c => c.toLowerCase().includes(q)) })).filter(g => g.items.length > 0);
+    },
+
+    get geoGrouped() {
+      const q = this.geoZipSearch.toLowerCase();
+      const entries = q
+        ? this.geoStateEntries.filter(e => e.zip.includes(q) || e.city.toLowerCase().includes(q))
+        : this.geoStateEntries;
+      // Group by county
+      const map = new Map();
+      for (const e of entries) {
+        if (!map.has(e.county)) map.set(e.county, []);
+        map.get(e.county).push(e);
+      }
+      return Array.from(map.entries())
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([name, zips]) => ({ name, zips }));
+    },
+
+    toggleTheme() {
+      this.theme = this.theme === 'light' ? 'dark' : 'light';
+      localStorage.setItem('theme', this.theme);
+      document.documentElement.classList.toggle('dark', this.theme === 'dark');
+    },
+
+    init() {
+      // Restore theme
+      const savedTheme = localStorage.getItem('theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      this.theme = savedTheme;
+      document.documentElement.classList.toggle('dark', savedTheme === 'dark');
+
+      const savedZips = localStorage.getItem('zip_list');
+      if (savedZips) try { this.zipList = JSON.parse(savedZips); } catch {}
+      const savedTpls = localStorage.getItem('sms_templates');
+      if (savedTpls) try { this.templates = JSON.parse(savedTpls); } catch {}
+      const savedUi = localStorage.getItem('ui_settings');
+      if (savedUi) {
+        try {
+          const ui = JSON.parse(savedUi);
+          if (ui.section) this.section = ui.section;
+          if (ui.form) this.form = { ...this.form, ...ui.form };
+          if (ui.filter) this.filter = { ...this.filter, ...ui.filter };
+          if (ui.sort) this.sort = { ...this.sort, ...ui.sort };
+          if (ui.pageSize) this.pageSize = ui.pageSize;
+          if (ui.activeTemplate) this.activeTemplate = ui.activeTemplate;
+          if (ui.zipSearch) this.zipSearch = ui.zipSearch;
+          if (ui.catSearch) this.catSearch = ui.catSearch;
+          if (typeof ui.geoOpen === 'boolean') this.geoOpen = ui.geoOpen;
+          if (ui.geoState) this.geoState = ui.geoState;
+          if (ui.geoZipSearch) this.geoZipSearch = ui.geoZipSearch;
+          if (Array.isArray(ui.selectedZips)) this.selectedZips = new Set(ui.selectedZips);
+          if (Array.isArray(ui.selectedCats)) this.selectedCats = new Set(ui.selectedCats);
+        } catch {}
+      }
+
+      this.$watch('zipList', v => localStorage.setItem('zip_list', JSON.stringify(v)));
+      this.$watch('templates', v => localStorage.setItem('sms_templates', JSON.stringify(v)), { deep: true });
+      const saveUi = () => localStorage.setItem('ui_settings', JSON.stringify({
+        section: this.section,
+        form: this.form,
+        filter: this.filter,
+        sort: this.sort,
+        pageSize: this.pageSize,
+        activeTemplate: this.activeTemplate,
+        zipSearch: this.zipSearch,
+        catSearch: this.catSearch,
+        geoOpen: this.geoOpen,
+        geoState: this.geoState,
+        geoZipSearch: this.geoZipSearch,
+        selectedZips: [...this.selectedZips],
+        selectedCats: [...this.selectedCats],
+      }));
+      ['section', 'form', 'filter', 'sort', 'pageSize', 'activeTemplate', 'zipSearch', 'catSearch', 'geoOpen', 'geoState', 'geoZipSearch', 'selectedZips', 'selectedCats']
+        .forEach(key => this.$watch(key, saveUi, { deep: true }));
+      this.$watch('filter', () => { this.leadPage = 1; }, { deep: true });
+      this.$watch('pageSize', () => { this.leadPage = 1; });
+
+      this.loadStats();
+      fetch('/api/scrape/status').then(r => r.json()).then(s => {
+        this.scraping = !!s.scraping;
+        this.stopping = !!s.stopping;
+      }).catch(() => {});
+      this.connectSSE();
+      // Prefetch geo states list
+      fetch('/api/geo/states').then(r => r.json()).then(data => { this.geoStates = data; }).catch(() => {});
+      if (this.geoState) this.onStateChange();
+    },
+
+    async onStateChange() {
+      this.geoZipSearch = '';
+      this.geoStateEntries = [];
+      this.geoBrowseSelected = new Set();
+      if (!this.geoState) return;
+      this.geoLoading = true;
+      try {
+        // Returns {county: [{city, zip}, ...], ...}
+        const byCounty = await fetch('/api/geo/state/' + this.geoState).then(r => r.json());
+        // Flatten to array with county attached
+        const entries = [];
+        for (const [county, zips] of Object.entries(byCounty)) {
+          for (const z of zips) entries.push({ county, city: z.city, zip: z.zip });
+        }
+        this.geoStateEntries = entries;
+      } finally {
+        this.geoLoading = false;
+      }
+    },
+
+    toggleGeoBrowse(zip) {
+      this.geoBrowseSelected.has(zip) ? this.geoBrowseSelected.delete(zip) : this.geoBrowseSelected.add(zip);
+      this.geoBrowseSelected = new Set(this.geoBrowseSelected);
+    },
+
+    selectAllGeoVisible() {
+      this.geoGrouped.forEach(county => county.zips.forEach(e => this.geoBrowseSelected.add(e.zip)));
+      this.geoBrowseSelected = new Set(this.geoBrowseSelected);
+    },
+
+    toggleCountyAll(county) {
+      const allOn = county.zips.every(z => this.geoBrowseSelected.has(z.zip));
+      county.zips.forEach(z => allOn ? this.geoBrowseSelected.delete(z.zip) : this.geoBrowseSelected.add(z.zip));
+      this.geoBrowseSelected = new Set(this.geoBrowseSelected);
+    },
+
+    addGeoSelected() {
+      const toAdd = [...this.geoBrowseSelected].filter(z => !this.zipList.includes(z));
+      this.zipList = [...this.zipList, ...toAdd];
+      toAdd.forEach(z => this.selectedZips.add(z));
+      this.selectedZips = new Set(this.selectedZips);
+      this.geoBrowseSelected = new Set();
+      if (toAdd.length) this.notify(`Added ${toAdd.length} zip(s) to your list`);
+    },
+
+    addZips() {
+      const incoming = this.zipInput.split(/[\n,\s]+/).map(z => z.trim()).filter(z => /^\d{5}$/.test(z));
+      const toAdd = incoming.filter(z => !this.zipList.includes(z));
+      this.zipList = [...this.zipList, ...toAdd];
+      toAdd.forEach(z => this.selectedZips.add(z));
+      this.selectedZips = new Set(this.selectedZips);
+      this.zipInput = '';
+      if (toAdd.length) this.notify(`Added ${toAdd.length} zip(s)`);
+    },
+
+    removeZip(zip) {
+      this.zipList = this.zipList.filter(z => z !== zip);
+      this.selectedZips.delete(zip);
+      this.selectedZips = new Set(this.selectedZips);
+    },
+
+    toggleZip(zip) {
+      this.selectedZips.has(zip) ? this.selectedZips.delete(zip) : this.selectedZips.add(zip);
+      this.selectedZips = new Set(this.selectedZips);
+    },
+
+    selectAllZips() { this.selectedZips = new Set(this.filteredZipList); },
+
+    toggleCat(cat) {
+      this.selectedCats.has(cat) ? this.selectedCats.delete(cat) : this.selectedCats.add(cat);
+      this.selectedCats = new Set(this.selectedCats);
+    },
+
+    selectAllCats() {
+      ALL_CATEGORIES.forEach(g => g.items.forEach(c => this.selectedCats.add(c)));
+      this.selectedCats = new Set(this.selectedCats);
+    },
+
+    toggleGroup(group) {
+      const allOn = group.items.every(c => this.selectedCats.has(c));
+      group.items.forEach(c => allOn ? this.selectedCats.delete(c) : this.selectedCats.add(c));
+      this.selectedCats = new Set(this.selectedCats);
+    },
+
+    async loadStats() {
+      const data = await fetch('/api/leads').then(r => r.json()).catch(() => []);
+      this.stats.total = data.length;
+    },
+
+    connectSSE() {
+      if (this.sse) this.sse.close();
+      const es = new EventSource('/api/scrape/events');
+      this.sse = es;
+      es.onmessage = (e) => {
+        const d = JSON.parse(e.data);
+        const src = d.source || 'main';
+        const entry = { id: Date.now() + Math.random(), ...d };
+
+        // Route to correct log bucket
+        if (this.logs[src]) {
+          this.logs[src].push(entry);
+          // Badge for inactive tabs
+          if (this.activeLog !== src) this.logBadges[src] = (this.logBadges[src] || 0) + 1;
+        }
+        // Legacy logLines for compatibility
+        this.logLines.push(entry);
+
+        if (src === 'main') {
+          if (d.type === 'start') { this.scraping = true; this.stopping = false; this.session = { jobs: 0, found: 0, saved: 0, duplicates: 0 }; }
+          if (d.type === 'stopping') this.stopping = true;
+          if (d.type === 'done') { this.scraping = false; this.stopping = false; this.loadStats(); }
+          if (d.type === 'lead') this.session.found++;
+          if (d.type === 'job-done') {
+            this.session.jobs++;
+            this.session.saved += d.saved ?? 0;
+            this.session.duplicates += d.duplicates ?? 0;
+            this.loadStats();
+          }
+        } else {
+          if (d.type === 'done') this.loadStats();
+        }
+
+        this.$nextTick(() => {
+          const b = document.getElementById('log-box-' + src);
+          if (b) b.scrollTop = b.scrollHeight;
+        });
+      };
+    },
+
+    async startScrape(detailFirst = false) {
+      if (!this.selectedZips.size || !this.selectedCats.size) return;
+      // Sync real server state — fixes "stuck in stopping" after SSE drop
+      const status = await fetch('/api/scrape/status').then(r => r.json()).catch(() => ({ scraping: false, stopping: false }));
+      this.scraping = status.scraping;
+      this.stopping = status.stopping;
+      if (this.scraping) { this.notify('Scrape already running'); return; }
+      this.scraping = false;
+      this.stopping = false;
+      this.logLines = [];
+      const res = await fetch('/api/scrape/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          zips: [...this.selectedZips],
+          categories: [...this.selectedCats],
+          maxPerZip: this.form.maxPerZip,
+          workers: this.form.workers,
+          skipScraped: this.form.skipScraped,
+          detailFirst,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { this.notify(data.error || 'Could not start scrape'); return; }
+      if (data.started === false) { this.notify(data.message || 'All zips already scraped'); }
+    },
+
+    async stopScrape() {
+      this.stopping = true;
+      await fetch('/api/scrape/stop', { method: 'POST' });
+      this.notify('Stop signal sent');
+    },
+
+    async loadLeads() {
+      this.leads = await fetch('/api/leads').then(r => r.json()).catch(() => []);
+      this.stats.total = this.leads.length;
+      this.leadPage = 1; // always reset page so stale page number never hides results
+    },
+
+    get filteredLeads() {
+      const q = this.filter.q.toLowerCase();
+      return this.leads.filter(l => {
+        // Search includes website emails + phones found by scraper
+        const extraSearch = [l.website_emails, l.website_phones]
+          .map(v => { try { return JSON.parse(v || '[]').join(' '); } catch { return ''; } })
+          .join(' ');
+        const ms = !q || [l.name, l.phone, l.address, l.website_url, l.category, extraSearch]
+          .some(v => v?.toLowerCase().includes(q));
+        const mz = !this.filter.zip || l.zip?.includes(this.filter.zip);
+        const mc = !this.filter.cat || l.category?.toLowerCase().includes(this.filter.cat.toLowerCase());
+        const mw = this.filter.website === 'all' ||
+                   (this.filter.website === 'yes' && l.has_website === 1) ||
+                   (this.filter.website === 'no'  && l.has_website !== 1);
+        // Phone filter: check Maps phone AND website_phones
+        const hasAnyPhone = !!l.phone || (() => {
+          try { return JSON.parse(l.website_phones || '[]').length > 0; } catch { return false; }
+        })();
+        const mp = this.filter.phone === 'all' ||
+                   (this.filter.phone === 'yes' && hasAnyPhone) ||
+                   (this.filter.phone === 'no'  && !hasAnyPhone);
+        return ms && mz && mc && mw && mp;
+      });
+    },
+
+    get sortedLeads() {
+      const numeric = new Set(['id', 'rating', 'review_count', 'has_website']);
+      const key = this.sort.key;
+      const dir = this.sort.dir === 'asc' ? 1 : -1;
+      return [...this.filteredLeads].sort((a, b) => {
+        let av = a[key], bv = b[key];
+        if (key === 'review_scrape_status') { av = av || 'pending'; bv = bv || 'pending'; }
+        if (numeric.has(key)) {
+          av = av == null || av === '' ? -Infinity : Number(av);
+          bv = bv == null || bv === '' ? -Infinity : Number(bv);
+          return (av - bv) * dir;
+        }
+        return String(av ?? '').localeCompare(String(bv ?? ''), undefined, { numeric: true, sensitivity: 'base' }) * dir;
+      });
+    },
+
+    get totalPages() { return Math.max(1, Math.ceil(this.sortedLeads.length / this.pageSize)); },
+    get pageStart() { return this.sortedLeads.length ? ((this.leadPage - 1) * this.pageSize) + 1 : 0; },
+    get pageEnd() { return Math.min(this.sortedLeads.length, this.leadPage * this.pageSize); },
+    get visible() {
+      // Clamp page without mutation inside getter — computed via Math.min instead
+      const page = Math.min(this.leadPage, this.totalPages);
+      const start = (page - 1) * this.pageSize;
+      return this.sortedLeads.slice(start, start + this.pageSize);
+    },
+
+    sortBy(key) {
+      if (this.sort.key === key) this.sort.dir = this.sort.dir === 'asc' ? 'desc' : 'asc';
+      else this.sort = { key, dir: 'asc' };
+      this.leadPage = 1;
+    },
+
+    sortIcon(key) {
+      if (this.sort.key !== key) return '';
+      return this.sort.dir === 'asc' ? '▲' : '▼';
+    },
+
+    toggle(id) { this.selected.has(id) ? this.selected.delete(id) : this.selected.add(id); this.selected = new Set(this.selected); },
+    toggleAll(e) { this.selected = e.target.checked ? new Set(this.visible.map(l => l.id)) : new Set(); },
+
+    async bulkSms() {
+      if (!this.selected.size) return;
+      const res = await fetch('/api/sms/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leadIds: [...this.selected], template: this.activeTemplate, templates: this.templates }),
+      });
+      const data = await res.json();
+      this.selected = new Set();
+      this.notify(`📥 ${data.queued} message(s) added to queue — go to SMS Queue to send`);
+    },
+
+    async bulkScrapeReviews() {
+      if (!this.selected.size) return;
+      this.reviewScraping = true;
+      const ids = [...this.selected];
+      const res = await fetch('/api/leads/scrape-reviews-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, max: 50, reviewWorkers: this.form.reviewWorkers }),
+      });
+      const data = await res.json().catch(() => ({ results: [] }));
+      const loaded = (data.results ?? []).reduce((sum, r) => sum + (r.count ?? 0), 0);
+      this.reviewScraping = false;
+      this.selected = new Set();
+      this.notify('Loaded ' + loaded + ' review(s)');
+    },
+
+    async bulkScrapeWebsites() {
+      if (!this.selected.size) return;
+      this.websiteScraping = true;
+      const ids = [...this.selected];
+
+      // Switch to Scraper tab so user can see live logs
+      this.section = 'scraper';
+      this.logLines = [];
+
+      fetch('/api/leads/scrape-websites-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      }).then(async () => {
+        this.websiteScraping = false;
+        await this.loadLeads();
+        this.notify(`✅ Website scrape done for ${ids.length} lead(s)`);
+      }).catch(() => {
+        this.websiteScraping = false;
+        this.notify('❌ Website scrape failed');
+      });
+    },
+
+    openFormSender() {
+      if (!this.selected.size) return;
+      this.formModal.open = true;
+    },
+
+    async bulkSubmitForms() {
+      this.formModal.open = false;
+      this.formSending = true;
+      const ids = [...this.selected];
+      const res = await fetch('/api/leads/submit-forms-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, sender: this.formModal.sender }),
+      });
+      const data = await res.json();
+      this.formSending = false;
+      const sent = (data.results || []).filter(r => r.success).length;
+      this.notify(`📋 Forms submitted: ${sent}/${ids.length} successful`);
+    },
+
+    async bulkScrapeDetails() {
+      if (!this.selected.size) return;
+      this.detailScraping = true;
+      const ids = [...this.selected];
+      const res = await fetch('/api/leads/scrape-details-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      const data = await res.json().catch(() => ({ results: [] }));
+      const ok = (data.results ?? []).filter(r => r.success).length;
+      this.detailScraping = false;
+      await this.loadLeads();
+      this.notify(`Details updated for ${ok}/${ids.length} lead(s)`);
+    },
+
+    async masterScrapeAll() {
+      if (!this.selected.size) return;
+      this.masterScraping = true;
+      const ids = [...this.selected];
+      this.notify(`🚀 Master scrape started for ${ids.length} lead(s) — details → websites → reviews`);
+
+      // Step 1: Re-scrape details
+      try {
+        this.detailScraping = true;
+        const r1 = await fetch('/api/leads/scrape-details-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
+        const d1 = await r1.json().catch(() => ({ results: [] }));
+        const ok1 = (d1.results ?? []).filter(r => r.success).length;
+        this.detailScraping = false;
+        await this.loadLeads();
+        this.notify(`✅ Step 1/3 done — details updated for ${ok1}/${ids.length}`);
+      } catch (e) {
+        this.detailScraping = false;
+        this.notify('❌ Step 1/3 failed (details)');
+      }
+
+      // Step 2: Scrape websites
+      try {
+        this.websiteScraping = true;
+        const r2 = await fetch('/api/leads/scrape-websites-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
+        await r2.json().catch(() => null);
+        this.websiteScraping = false;
+        await this.loadLeads();
+        this.notify(`✅ Step 2/3 done — websites scraped for ${ids.length}`);
+      } catch (e) {
+        this.websiteScraping = false;
+        this.notify('❌ Step 2/3 failed (websites)');
+      }
+
+      // Step 3: Scrape reviews
+      try {
+        this.reviewScraping = true;
+        const r3 = await fetch('/api/leads/scrape-reviews-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids, max: 50, reviewWorkers: this.form.reviewWorkers }),
+        });
+        const d3 = await r3.json().catch(() => ({ results: [] }));
+        const loaded = (d3.results ?? []).reduce((sum, r) => sum + (r.count ?? 0), 0);
+        this.reviewScraping = false;
+        this.notify(`✅ Step 3/3 done — ${loaded} review(s) loaded`);
+      } catch (e) {
+        this.reviewScraping = false;
+        this.notify('❌ Step 3/3 failed (reviews)');
+      }
+
+      this.masterScraping = false;
+      await this.loadLeads();
+      this.notify(`🎉 Master scrape complete for ${ids.length} lead(s)`);
+    },
+
+    async deleteAll() {
+      if (!this.leads.length || !confirm(`Delete ALL ${this.leads.length} leads? This cannot be undone.`)) return;
+      await fetch('/api/leads/delete-all', { method: 'POST' });
+      this.selected = new Set();
+      await this.loadLeads();
+      this.notify('All leads deleted');
+    },
+
+    async bulkDelete() {
+      if (!this.selected.size || !confirm(`Delete ${this.selected.size} lead(s)? This cannot be undone.`)) return;
+      const ids = [...this.selected];
+      await fetch('/api/leads/delete-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      const del = new Set(ids);
+      this.leads = this.leads.filter(l => !del.has(l.id));
+      this.selected = new Set();
+      this.stats.total = this.leads.length;
+      this.notify(`Deleted ${ids.length} lead(s)`);
+    },
+
+    async singleSms(id) {
+      this.results = [];
+      const res = await fetch('/api/sms/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leadIds: [id], template: this.activeTemplate, templates: this.templates }),
+      });
+      const data = await res.json();
+      this.results = data.results;
+      this.notify(data.results[0]?.success ? '📱 SMS sent!' : '❌ SMS failed');
+    },
+
+    async del(id) {
+      if (!confirm('Delete this lead?')) return;
+      await fetch('/api/leads/' + id, { method: 'DELETE' });
+      this.leads = this.leads.filter(l => l.id !== id);
+      this.selected.delete(id); this.selected = new Set(this.selected);
+      this.stats.total--;
+    },
+
+    pendingCount() {
+      return this.smsQueue.filter(q => q.status === 'pending').length;
+    },
+
+    previewTemplate(body) {
+      return (body || '').replace(/\{name\}/g, "Joe's Plumbing").replace(/\{location\}/g, 'Fairfax');
+    },
+
+    testPreview(key) {
+      const t = this.templates[key];
+      if (!t) return '';
+      const name = this.testName || "Joe's Plumbing";
+      const loc = this.testLocation || 'Bethesda';
+      return 'Preview: ' + t.body.replace(/\{name\}/g, name).replace(/\{location\}/g, loc);
+    },
+
+    async sendTestSms(templateKey) {
+      const to = this.testPhone.trim();
+      if (!to) { alert('Enter your test phone number first'); return; }
+      const t = this.templates[templateKey];
+      if (!t) return;
+      const name = this.testName || "Joe's Plumbing";
+      const location = this.testLocation || 'Bethesda';
+      const body = t.body.replace(/\{name\}/g, name).replace(/\{location\}/g, location);
+      const res = await fetch('/api/sms/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to, body }),
+      });
+      const data = await res.json();
+      if (!res.ok) alert('❌ ' + (data.error || 'Test failed'));
+      else this.notify(`✅ Test sent to ${data.to} — check your phone`);
+    },
+
+    async loadQueue() {
+      this.smsQueue = await fetch('/api/sms/queue').then(r => r.json()).catch(() => []);
+      const sched = await fetch('/api/sms/schedule').then(r => r.json()).catch(() => ({}));
+      this.scheduleTime = sched.time || '';
+      this.scheduleDays = sched.days || [1,2,3,4,5];
+    },
+
+    toggleScheduleDay(day) {
+      const i = this.scheduleDays.indexOf(day);
+      if (i >= 0) this.scheduleDays.splice(i, 1);
+      else this.scheduleDays.push(day);
+      this.scheduleDays = [...this.scheduleDays];
+    },
+
+    async saveSchedule() {
+      await fetch('/api/sms/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ time: this.scheduleTime || null, days: this.scheduleDays }),
+      });
+      this.notify(this.scheduleTime ? `⏰ Scheduled for ${this.scheduleTime} on selected days` : 'Schedule cleared');
+    },
+
+    async clearSchedule() {
+      this.scheduleTime = '';
+      await fetch('/api/sms/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ time: null }) });
+      this.notify('Schedule cleared');
+    },
+
+    async sendQueue(force = false) {
+      const check = await fetch('/api/sms/check').then(r => r.json()).catch(() => ({ ok: false, reason: 'error', message: 'Check failed' }));
+      if (!check.ok && (check.reason === 'no_device' || check.reason === 'adb_missing' || check.reason === 'error')) {
+        alert('❌ ' + check.message);
+        return;
+      }
+      if (!check.ok && (check.reason === 'scraping' || check.reason === 'outside_hours') && !force) {
+        if (!confirm('⚠️ ' + check.message + '\n\nSend anyway?')) return;
+        force = true;
+      }
+      this.queueSending = true;
+      const res = await fetch('/api/sms/queue/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force }),
+      });
+      const data = await res.json();
+      this.queueSending = false;
+      if (!res.ok) { alert('❌ ' + (data.message || data.error)); }
+      else this.notify(`✅ Sent ${data.sent} · Failed ${data.failed}`);
+      await this.loadQueue();
+    },
+
+    async clearQueue(status) {
+      if (!confirm(status ? `Clear all ${status} messages?` : 'Clear entire queue?')) return;
+      await fetch('/api/sms/queue/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      });
+      await this.loadQueue();
+    },
+
+    async loadOutreach() {
+      this.outreach = await fetch('/api/outreach').then(r => r.json()).catch(() => []);
+    },
+
+    get filteredOutreach() {
+      const q = this.outreachFilter.q.toLowerCase();
+      return this.outreach.filter(o => {
+        const mq = !q || [o.name, o.phone, o.message, o.zip].some(v => v?.toLowerCase().includes(q));
+        const mc = !this.outreachFilter.channel || o.channel === this.outreachFilter.channel;
+        const mz = !this.outreachFilter.zip || o.zip?.includes(this.outreachFilter.zip);
+        return mq && mc && mz;
+      });
+    },
+
+    addTemplate() {
+      const key = this.newTpl.name.toLowerCase().replace(/\s+/g, '_');
+      this.templates[key] = { name: this.newTpl.name, body: this.newTpl.body };
+      this.newTpl = { name: '', body: '' };
+      this.notify('Template added');
+    },
+
+    deleteTemplate(key) {
+      if (!confirm('Delete this template?')) return;
+      const t = { ...this.templates };
+      delete t[key];
+      this.templates = t;
+    },
+
+    get detailLead() { return this.detailPanel.lead; },
+    get detailHours() {
+      try { return JSON.parse(this.detailPanel.lead.hours || '{}'); } catch { return {}; }
+    },
+    // Normalize any phone string to (XXX) XXX-XXXX for US numbers.
+    // Strips extensions (x123 / ext 123 / #123), country codes (+1 / 1-),
+    // dots, dashes, spaces, parens — whatever format it arrives in.
+    // Returns the original trimmed string if it can't be reduced to 10 digits.
+    normalizePhone(p) {
+      if (!p) return p;
+      // Remove extensions: "x123", "ext 45", "ext. 45", "#123"
+      const noExt = p.replace(/\s*(x|ext\.?|#)\s*\d{1,5}$/i, '').trim();
+      // Strip everything that isn't a digit
+      const digits = noExt.replace(/\D/g, '');
+      // Remove leading country code: +1 or just 1 when 11 digits
+      const ten = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits;
+      if (ten.length !== 10) return p.trim(); // non-US or malformed — show as-is
+      return '(' + ten.slice(0, 3) + ') ' + ten.slice(3, 6) + '-' + ten.slice(6);
+    },
+
+    // Canonical dedup key: last 10 digits of a raw phone string.
+    // Two numbers map to the same key if they represent the same subscriber number.
+    _phoneKey(p) {
+      const d = (p || '').replace(/\D/g, '');
+      const ten = d.length === 11 && d[0] === '1' ? d.slice(1) : d;
+      return ten.length >= 7 ? ten : d; // fall back to full digits if too short
+    },
+
+    // All unique normalized phones for a lead row (main + website_phones, deduped).
+    leadPhones(lead) {
+      const raw = [];
+      if (lead.phone) raw.push(lead.phone);
+      try { raw.push(...JSON.parse(lead.website_phones || '[]')); } catch {}
+      const seen = new Set();
+      const result = [];
+      for (const p of raw) {
+        const key = this._phoneKey(p);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(this.normalizePhone(p));
+      }
+      return result;
+    },
+
+    get detailAmenities() {
+      try { return JSON.parse(this.detailPanel.lead.amenities || '[]'); } catch { return []; }
+    },
+
+    websiteEmails() {
+      try { return JSON.parse(this.detailPanel.lead.website_emails || '[]'); } catch { return []; }
+    },
+
+    websitePhones() {
+      try {
+        const raw = JSON.parse(this.detailPanel.lead.website_phones || '[]');
+        const seen = new Set();
+        const result = [];
+        for (const p of raw) {
+          const key = this._phoneKey(p);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          result.push(this.normalizePhone(p));
+        }
+        return result;
+      } catch { return []; }
+    },
+    get detailSocialLinks() {
+      try { return JSON.parse(this.detailPanel.lead.social_links || '[]'); } catch { return []; }
+    },
+
+    async openDetails(lead) {
+      this.detailPanel = { open: true, tab: 'info', lead: { ...lead }, reviews: [], loadingDetails: false, loadingReviews: false };
+      // Load existing reviews from DB
+      const reviews = await fetch('/api/leads/' + lead.id + '/reviews').then(r => r.json()).catch(() => []);
+      this.detailPanel.reviews = reviews;
+    },
+
+    notify(msg) { this.toast = { show: true, msg }; setTimeout(() => this.toast.show = false, 3000); },
+  };
+}
+</script>
+</body>
+</html>
