@@ -3,6 +3,14 @@
   "version": "1.0.0",
   "description": "Scrape Google Maps for no-website businesses and send outreach",
   "type": "module",
+  "homepage": "https://github.com/benyamin-persia/mapleadhunter#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benyamin-persia/mapleadhunter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/benyamin-persia/mapleadhunter/issues"
+  },
   "scripts": {
     "dev": "tsx watch src/cli/index.ts",
     "build": "tsc",
