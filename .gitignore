@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-installer/
 coverage/
 
 # Local environment and secrets
@@ -11,13 +12,21 @@ coverage/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/*.tmp*
+data/.tmp*
 data/exports/
 
 # Browser profiles can contain cookies, history, and account data
 data/maps-profile/
 
+# Electron debug/test files
+electron/debug.js
+electron/main.js.bak
+electron/test.cjs
+
 # Local editor/assistant metadata
 .claude/
+.codex-run/
 .specstory/
 .vscode/
 CLAUDE.md

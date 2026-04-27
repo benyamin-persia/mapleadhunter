@@ -151,6 +151,7 @@ async function runScrape(
       website_url: websiteUrl,
       has_website: hasWebsite,
       scrape_method: detailFirst ? 'detail' : 'fast',
+      maps_thumbnail: card.thumbnail,
     });
 
     const badge = hasWebsite ? '🌐' : '📵';

@@ -8,7 +8,7 @@ export const exportLeadsCommand = new Command('export-leads')
   .description('Export all leads to leads.csv')
   .option('--out <path>', 'Output file path', 'leads.csv')
   .action(async (opts: { out: string }) => {
-    const leads = getAllLeads();
+    const leads = await getAllLeads();
 
     if (leads.length === 0) {
       logger.warn('No leads found — run scrape first');
@@ -26,5 +26,5 @@ export const exportLeadsCommand = new Command('export-leads')
     const outPath = path.resolve(opts.out);
     fs.writeFileSync(outPath, csv, 'utf8');
 
-    logger.info({ path: outPath, count: leads.length }, 'exported leads');
+    logger.info({ path: outPath, count: (leads as unknown[]).length }, 'exported leads');
   });

@@ -2,6 +2,8 @@ import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import type { Browser, BrowserContext } from 'playwright';
 import path from 'path';
+import os from 'os';
+import { logger } from './logger.js';
 
 chromium.use(StealthPlugin());
 
@@ -13,8 +15,28 @@ const contextOptions = {
   viewport: { width: 1280, height: 800 },
 };
 
+// Writable user-data directory — never inside Program Files
+function userDataDir(subdir: string): string {
+  if (process.env['GOOGLE_MAPS_PROFILE_DIR']) return process.env['GOOGLE_MAPS_PROFILE_DIR'];
+  const appData = process.env['APPDATA'] ?? path.join(os.homedir(), 'AppData', 'Roaming');
+  return path.join(appData, 'MapLeadHunter', subdir);
+}
+
+// Track all active browsers so Stop can close them immediately
+const _activeBrowsers = new Set<Browser | BrowserContext>();
+export function closeAllBrowsers(): void {
+  for (const b of _activeBrowsers) {
+    b.close().catch(() => null);
+  }
+  _activeBrowsers.clear();
+}
+
 export async function launchStealthBrowser(): Promise<Browser> {
-  return chromium.launch({ headless: true }) as unknown as Browser;
+  logger.info('Launching Chromium (headless)');
+  const browser = await chromium.launch({ headless: true }) as unknown as Browser;
+  _activeBrowsers.add(browser);
+  browser.on('disconnected', () => _activeBrowsers.delete(browser));
+  return browser;
 }
 
 export async function newStealthContext(browser: Browser): Promise<BrowserContext> {
@@ -22,10 +44,15 @@ export async function newStealthContext(browser: Browser): Promise<BrowserContex
 }
 
 export async function openReviewContext(): Promise<{ context: BrowserContext; close: () => Promise<void> }> {
-  const profileDir = process.env['GOOGLE_MAPS_PROFILE_DIR'] ?? 'data/maps-profile';
-  const context = await chromium.launchPersistentContext(path.resolve(profileDir), {
+  const profileDir = userDataDir('maps-profile');
+  logger.info('Launching Chromium persistent context (headless)');
+  const context = await chromium.launchPersistentContext(profileDir, {
     ...contextOptions,
-    headless: process.env['REVIEW_HEADLESS'] === 'true',
+    headless: true,
   }) as unknown as BrowserContext;
-  return { context, close: () => context.close() };
+  _activeBrowsers.add(context);
+  return {
+    context,
+    close: async () => { _activeBrowsers.delete(context); await context.close(); },
+  };
 }

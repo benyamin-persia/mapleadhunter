@@ -18,7 +18,7 @@ function getTransport() {
 
 export async function sendEmail(leadId: number, toEmail: string): Promise<void> {
   const log = leadLogger(leadId);
-  const lead = getLeadById(leadId);
+  const lead = await getLeadById(leadId);
 
   if (!lead) throw new Error(`Lead ${leadId} not found`);
 
@@ -42,6 +42,6 @@ Best,
   log.info({ to: toEmail }, 'sending email');
   await transport.sendMail({ from: env.GMAIL_USER, to: toEmail, subject, text: body });
 
-  logOutreach({ leadId, zip: lead.zip, phone: lead.phone, channel: 'email', message: body });
+  await logOutreach({ leadId, zip: lead.zip, phone: lead.phone, channel: 'email', message: body });
   log.info('email sent and logged');
 }

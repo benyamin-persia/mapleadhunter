@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Scrape Google Maps for no-website businesses and send outreach",
   "type": "module",
+  "main": "app-main.cjs",
   "homepage": "https://github.com/benyamin-persia/mapleadhunter#readme",
   "repository": {
     "type": "git",
@@ -23,13 +24,17 @@
     "send-email": "tsx src/cli/index.ts send-email",
     "web": "tsx src/server/index.ts",
     "setup-geo": "node scripts/setup-geo.mjs",
-    "maps-login": "tsx scripts/maps-login.ts"
+    "maps-login": "tsx scripts/maps-login.ts",
+    "electron": "SET \"ELECTRON_RUN_AS_NODE=\" && electron .",
+    "electron-build": "electron-builder --win"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.3",
     "commander": "^12.1.0",
     "csv-parser": "^3.0.0",
     "dotenv": "^16.4.5",
     "express": "^5.2.1",
+    "googleapis": "^171.4.0",
     "json2csv": "^6.0.0-alpha.2",
     "nodemailer": "^6.9.13",
     "pino": "^9.1.0",
@@ -44,8 +49,73 @@
     "@types/json2csv": "^5.0.7",
     "@types/node": "^25.6.0",
     "@types/nodemailer": "^6.4.15",
+    "electron": "^31.7.7",
+    "electron-builder": "^26.8.1",
+    "tailwindcss": "^4.2.4",
     "tsx": "^4.11.0",
     "typescript": "^5.4.5",
     "vitest": "^1.6.0"
+  },
+  "build": {
+    "appId": "com.mapleadhunter.app",
+    "productName": "MapLeadHunter",
+    "copyright": "Copyright © 2026",
+    "directories": {
+      "output": "dist-installer"
+    },
+    "files": [
+      "**/*",
+      "!node_modules/**/*",
+      "!data/**/*",
+      "!dist-installer/**/*",
+      "!screenshots/**/*",
+      "!*.md",
+      "!.codex-run/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": ".",
+        "to": "app",
+        "filter": [
+          "src/**/*",
+          "scripts/**/*",
+          "electron/**/*",
+          "package.json",
+          "tsconfig.json",
+          ".env",
+          "data/geo.json"
+        ]
+      },
+      {
+        "from": "node_modules",
+        "to": "app/node_modules",
+        "filter": [
+          "**/*",
+          "!**/.git/**",
+          "!**/test/**",
+          "!**/tests/**",
+          "!**/*.map"
+        ]
+      }
+    ],
+    "asar": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "electron/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MapLeadHunter"
+    }
   }
 }

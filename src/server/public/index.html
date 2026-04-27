@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MapLeadHunter</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/vendor/tailwind-cdn.js"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
-  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script defer src="/vendor/alpine.min.js"></script>
   <style>
     [x-cloak]{display:none!important}
     .log-line{font-family:'Courier New',monospace;font-size:12px;line-height:1.7}
@@ -120,17 +120,17 @@
         <div class="flex items-center gap-2">
           <span x-show="selectedZips.size>0||selectedCats.size>0" class="text-xs text-slate-500"
             x-text="selectedZips.size+' zip(s) × '+selectedCats.size+' cat(s) = '+selectedZips.size*selectedCats.size+' job(s)'"></span>
-          <button @click="startScrape(false)"
-            :disabled="scraping || stopping || selectedZips.size===0 || selectedCats.size===0"
-            class="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-2 px-5 rounded-xl text-sm transition-colors"
-            x-text="stopping?'Stopping...':(scraping?'Running...':'⚡ Fast Scrape')">
-          </button>
           <button @click="startScrape(true)"
-            :disabled="scraping || stopping || selectedZips.size===0 || selectedCats.size===0"
+            :disabled="scraping || stopping || masterScraping || selectedZips.size===0 || selectedCats.size===0"
             class="bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-2 px-5 rounded-xl text-sm transition-colors"
             x-text="stopping?'Stopping...':(scraping?'Running...':'🔍 Detail Scrape')">
           </button>
-          <button x-show="scraping" @click="stopScrape()" :disabled="stopping" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50" x-text="stopping?'Stopping...':'Stop'"></button>
+          <button @click="masterScrapeFromScraper()"
+            :disabled="scraping || stopping || masterScraping || selectedZips.size===0 || selectedCats.size===0"
+            class="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2 px-5 rounded-xl text-sm transition-colors ring-2 ring-emerald-300"
+            x-text="masterScraping?'Master scraping...':'🚀 Master Scraper'">
+          </button>
+          <button x-show="scraping||masterScraping" @click="stopScrape()" :disabled="stopping" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50" x-text="stopping?'Stopping...':'Stop'"></button>
         </div>
       </div>
 
@@ -227,7 +227,15 @@
                 <input type="checkbox" :checked="selectedZips.has(zip)" @change="toggleZip(zip)"
                   class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-400">
                 <span class="text-sm font-mono text-slate-700 flex-1" x-text="zip"></span>
-                <button @click.prevent="removeZip(zip)" class="text-slate-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button>
+                <!-- Active claim indicator -->
+                <template x-if="claimedZipMap.has(zip)">
+                  <span :title="claimTooltip(claimedZipMap.get(zip))"
+                    class="flex items-center gap-1 text-xs text-emerald-600 font-semibold flex-shrink-0">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
+                    <span x-text="claimedZipMap.get(zip).length > 1 ? claimedZipMap.get(zip).length+'🖥' : '🖥'"></span>
+                  </span>
+                </template>
+                <button @click.prevent="removeZip(zip)" class="text-slate-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 flex-shrink-0">✕</button>
               </label>
             </template>
           </div>
@@ -263,7 +271,15 @@
                     <label class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer">
                       <input type="checkbox" :checked="selectedCats.has(cat)" @change="toggleCat(cat)"
                         class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-400">
-                      <span class="text-sm text-slate-700" x-text="cat"></span>
+                      <span class="text-sm text-slate-700 flex-1" x-text="cat"></span>
+                      <!-- Active claim indicator -->
+                      <template x-if="claimedCatMap.has(cat)">
+                        <span :title="claimTooltip(claimedCatMap.get(cat))"
+                          class="flex items-center gap-0.5 flex-shrink-0">
+                          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
+                          <span class="text-xs text-emerald-600 font-semibold" x-text="'🖥'+claimedCatMap.get(cat).length"></span>
+                        </span>
+                      </template>
                     </label>
                   </template>
                 </div>
@@ -319,7 +335,7 @@
           <div class="flex-1 flex flex-col overflow-hidden m-4 bg-slate-900 rounded-2xl border border-slate-700">
             <!-- Log tab bar -->
             <div class="flex items-center border-b border-slate-700 flex-shrink-0 px-2 pt-1 gap-1">
-              <template x-for="tab in [{id:'main',label:'⚡ Main',color:'text-indigo-400'},{id:'detail',label:'📋 Details',color:'text-teal-400'},{id:'website',label:'🌐 Website',color:'text-emerald-400'},{id:'reviews',label:'⭐ Reviews',color:'text-amber-400'}]" :key="tab.id">
+              <template x-for="tab in [{id:'main',label:'⚡ Main',color:'text-indigo-400'},{id:'detail',label:'📋 Details',color:'text-teal-400'},{id:'website',label:'🌐 Website',color:'text-emerald-400'},{id:'reviews',label:'⭐ Reviews',color:'text-amber-400'},{id:'network',label:'🌐 Network',color:'text-sky-400'}]" :key="tab.id">
                 <button @click="activeLog=tab.id; logBadges[tab.id]=0"
                   :class="activeLog===tab.id ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'"
                   class="relative text-xs px-3 py-1.5 rounded-t-lg font-medium transition-colors">
@@ -346,6 +362,17 @@
                 </template>
               </div>
             </template>
+            <!-- Network tab: live feed from ALL computers -->
+            <div id="log-box-network" x-show="activeLog==='network'" class="flex-1 overflow-auto p-4 space-y-0.5">
+              <div x-show="networkLog.length===0" class="log-line text-slate-600">Waiting for activity from other computers...</div>
+              <template x-for="line in networkLog" :key="line.id">
+                <div class="log-line">
+                  <span class="text-sky-500 font-mono text-xs" x-text="'['+line.host+'] '"></span>
+                  <span :class="{'text-green-400':line.type==='lead','text-red-400':line.type==='error','text-yellow-300':line.type==='done'||line.type==='start','text-slate-400':line.type==='log'}"
+                    x-text="line.message"></span>
+                </div>
+              </template>
+            </div>
           </div>
         </div>
 
@@ -364,6 +391,9 @@
         <div class="flex gap-2">
           <a href="/api/leads/export.csv" class="text-sm bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium px-3 py-1.5 rounded-lg shadow-sm">⬇ CSV</a>
           <a href="/api/leads/export.vcf" class="text-sm bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium px-3 py-1.5 rounded-lg shadow-sm">📱 Contacts (VCF)</a>
+          <button @click="backupToSheets()" :disabled="sheetsBackingUp"
+            class="text-sm bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-700 font-medium px-3 py-1.5 rounded-lg shadow-sm disabled:opacity-50"
+            x-text="sheetsBackingUp ? 'Backing up...' : '☁ Google Sheets'"></button>
           <button @click="loadLeads()" class="text-sm bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium px-3 py-1.5 rounded-lg shadow-sm">↺ Refresh</button>
         </div>
       </div>
@@ -430,6 +460,10 @@
             class="bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
             <span x-text="websiteScraping?'Scraping websites...':'🌐 Scrape Websites ('+selected.size+')'"></span>
           </button>
+          <button @click="bulkScrapePhotos()" :disabled="photoScraping||masterScraping"
+            class="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
+            <span x-text="photoScraping?'Scraping photos...':'📷 Scrape Photos ('+selected.size+')'"></span>
+          </button>
           <button @click="openFormSender()" :disabled="formSending||masterScraping"
             class="bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
             <span x-text="formSending?'Submitting forms...':'📋 Submit Forms ('+selected.size+')'"></span>
@@ -446,6 +480,11 @@
           <button @click="deleteAll()" :disabled="masterScraping"
             class="bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
             🗑 Delete All (<span x-text="leads.length"></span>)
+          </button>
+          <button @click="wipeDatabase()" :disabled="masterScraping||scraping"
+            class="bg-red-900 hover:bg-red-950 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm border border-red-600"
+            title="Wipes everything from Turso cloud — leads, reviews, SMS queue, scraped zips">
+            💣 Wipe DB
           </button>
           <button @click="selected=new Set()" class="text-slate-400 hover:text-slate-600 text-sm">Deselect all</button>
         </div>
@@ -468,7 +507,13 @@
           <thead class="bg-slate-50 border-b border-slate-200">
             <tr>
               <th class="px-3 py-3 w-10"><input type="checkbox" @change="toggleAll($event)" class="rounded border-slate-300 text-indigo-600"></th>
-              <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('name')" class="hover:text-indigo-600">Business <span x-text="sortIcon('name')"></span></button></th>
+              <th class="px-3 py-3 text-left font-semibold text-slate-600">
+                <button @click="sortBy('name')" class="hover:text-indigo-600">Business <span x-text="sortIcon('name')"></span></button>
+                <div class="flex gap-2 mt-0.5">
+                  <button @click="sortBy('created_at')" class="text-xs font-normal text-slate-400 hover:text-indigo-500">✚ created <span x-text="sortIcon('created_at')"></span></button>
+                  <button @click="sortBy('updated_at')" class="text-xs font-normal text-slate-400 hover:text-indigo-500">✎ edited <span x-text="sortIcon('updated_at')"></span></button>
+                </div>
+              </th>
               <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('phone')" class="hover:text-indigo-600">Phone(s) <span x-text="sortIcon('phone')"></span></button></th>
               <th class="px-3 py-3 text-left font-semibold text-slate-600">Email(s)</th>
               <th class="px-3 py-3 text-left font-semibold text-slate-600"><button @click="sortBy('address')" class="hover:text-indigo-600">Address <span x-text="sortIcon('address')"></span></button></th>
@@ -489,18 +534,35 @@
               <tr :class="selected.has(lead.id)?'bg-indigo-50':'hover:bg-slate-50/70'" class="transition-colors">
                 <td class="px-3 py-3"><input type="checkbox" :checked="selected.has(lead.id)" @change="toggle(lead.id)" class="rounded border-slate-300 text-indigo-600"></td>
                 <td class="px-3 py-3" style="min-width:140px">
-                  <div class="font-semibold text-slate-800 text-xs" x-text="lead.name"></div>
-                  <div class="text-xs text-slate-400" x-text="'#'+lead.id"></div>
+                  <div class="flex items-start gap-2">
+                    <img x-show="lead.maps_thumbnail||lead.website_og_image"
+                      :src="lead.maps_thumbnail||lead.website_og_image"
+                      class="w-10 h-10 rounded-lg object-cover flex-shrink-0 border border-slate-200"
+                      @error="$el.style.display='none'">
+                    <div>
+                      <div class="font-semibold text-slate-800 text-xs" x-text="lead.name"></div>
+                      <div class="text-xs text-slate-400" x-text="'#'+lead.id"></div>
+                      <div class="text-xs text-slate-400 mt-0.5" :title="'Created: '+lead.created_at+'\nUpdated: '+lead.updated_at" x-text="'✚ '+timeAgo(lead.created_at)+(lead.updated_at && lead.updated_at!==lead.created_at ? ' · ✎ '+timeAgo(lead.updated_at) : '')"></div>
+                    </div>
+                  </div>
                 </td>
-                <!-- Phone(s): all unique normalized phones -->
+                <!-- Phone(s): primary phone + expand on click -->
                 <td class="px-3 py-3 text-xs" style="min-width:130px">
                   <template x-if="leadPhones(lead).length === 0">
                     <span class="text-slate-300 font-mono">—</span>
                   </template>
-                  <template x-for="(p, i) in leadPhones(lead)" :key="p">
-                    <a :href="'tel:'+p"
-                      :class="i===0 ? 'font-mono text-slate-700 hover:text-indigo-600' : 'font-mono text-teal-600 hover:underline'"
-                      class="block hover:underline" x-text="p"></a>
+                  <template x-if="leadPhones(lead).length > 0">
+                    <div>
+                      <template x-for="(p, i) in (expandedPhones.has(lead.id) ? leadPhones(lead) : leadPhones(lead).slice(0,1))" :key="p">
+                        <a :href="'tel:'+p"
+                          :class="i===0 ? 'font-mono text-slate-700 hover:text-indigo-600' : 'font-mono text-teal-600 hover:text-teal-800'"
+                          class="block hover:underline" x-text="p"></a>
+                      </template>
+                      <span x-show="leadPhones(lead).length > 1"
+                        @click.stop="expandedPhones.has(lead.id) ? expandedPhones.delete(lead.id) : expandedPhones.add(lead.id); expandedPhones = new Set(expandedPhones)"
+                        class="text-xs text-indigo-500 hover:text-indigo-700 cursor-pointer mt-0.5 inline-block"
+                        x-text="expandedPhones.has(lead.id) ? '▲ less' : '▼ +' + (leadPhones(lead).length - 1) + ' more'"></span>
+                    </div>
                   </template>
                 </td>
                 <!-- Email(s) from website scrape -->
@@ -866,6 +928,9 @@
       <button @click="detailPanel.tab='reviews'" :class="detailPanel.tab==='reviews'?'border-b-2 border-indigo-600 text-indigo-600':'text-slate-400'" class="px-4 py-2 text-xs font-semibold">
         Reviews <span x-show="detailPanel.reviews.length" class="ml-1 bg-slate-100 text-slate-600 rounded-full px-1.5" x-text="detailPanel.reviews.length"></span>
       </button>
+      <button @click="detailPanel.tab='photos'" :class="detailPanel.tab==='photos'?'border-b-2 border-indigo-600 text-indigo-600':'text-slate-400'" class="px-4 py-2 text-xs font-semibold">
+        Photos <span x-show="detailPanelPhotos.length" class="ml-1 bg-slate-100 text-slate-600 rounded-full px-1.5" x-text="detailPanelPhotos.length"></span>
+      </button>
     </div>
   </div>
 
@@ -1048,6 +1113,27 @@
       </div>
     </template>
   </div>
+
+  <!-- Tab: Photos -->
+  <div x-show="detailPanel.tab==='photos'" class="flex-1 overflow-auto p-4">
+    <div x-show="detailPanelPhotos.length===0" class="text-center py-10 text-slate-400 text-sm">
+      No photos saved yet — click "📷 Scrape Photos" to fetch them.
+    </div>
+    <div x-show="detailPanel.lead.website_og_image" class="mb-4">
+      <div class="text-xs font-semibold text-slate-500 mb-2">Website Image</div>
+      <img :src="detailPanel.lead.website_og_image" class="h-32 rounded-xl object-cover border border-slate-200" @error="$el.style.display='none'">
+    </div>
+    <div x-show="detailPanelPhotos.length>0">
+      <div class="text-xs font-semibold text-slate-500 mb-2" x-text="'Google Maps Photos ('+detailPanelPhotos.length+')'"></div>
+      <div class="grid grid-cols-2 gap-2">
+        <template x-for="(photo, i) in detailPanelPhotos" :key="i">
+          <a :href="photo" target="_blank" rel="noopener noreferrer">
+            <img :src="photo" class="w-full h-32 object-cover rounded-xl border border-slate-200 hover:opacity-90 transition-opacity" @error="$el.parentElement.style.display='none'">
+          </a>
+        </template>
+      </div>
+    </div>
+  </div>
 </div>
 <div x-show="detailPanel.open" @click="detailPanel.open=false" class="fixed inset-0 bg-black/20 z-30"></div>
 
@@ -1058,15 +1144,429 @@
 
 <script>
 const ALL_CATEGORIES = [
-  { label: '🏗️ Home Services', items: ['plumber','electrician','HVAC contractor','air conditioning repair','heating contractor','roofing contractor','roof repair','siding contractor','window installation','door installation','flooring contractor','tile contractor','carpet installer','drywall contractor','painter','house painter','fence contractor','deck builder','concrete contractor','masonry contractor','general contractor','home renovation','kitchen remodeler','bathroom remodeler','handyman','junk removal','moving company','pest control','lawn care','landscaping','tree service','irrigation service','pool cleaning','pool contractor','pressure washing'] },
-  { label: '🚗 Automotive', items: ['auto repair','mechanic','tire shop','oil change','brake shop','transmission repair','auto body shop','collision repair','car detailing','car wash','towing service','windshield repair','auto glass repair','used car dealer'] },
-  { label: '💇 Personal Services', items: ['barber shop','hair salon','nail salon','beauty salon','spa','massage therapist','eyelash salon','waxing salon','tattoo shop','piercing shop','makeup artist'] },
-  { label: '🏥 Health & Wellness', items: ['dentist','dental clinic','orthodontist','chiropractor','physical therapy','urgent care','medical clinic','family doctor','pediatrician','dermatologist','eye doctor','optometrist','pharmacy'] },
-  { label: '🍽️ Food & Beverage', items: ['restaurant','cafe','coffee shop','bakery','pizza','food truck','catering'] },
-  { label: '🏪 Retail', items: ['convenience store','grocery store','liquor store','smoke shop','vape shop','thrift store','clothing store','furniture store','electronics store','hardware store'] },
-  { label: '🧼 Cleaning', items: ['house cleaning','commercial cleaning','carpet cleaning','window cleaning','janitorial service'] },
-  { label: '🐶 Pet Services', items: ['pet grooming','dog grooming','pet boarding','dog daycare','veterinarian'] },
-  { label: '📦 Business Services', items: ['printing shop','sign shop','accounting','tax preparation','insurance agency','real estate agency','property management'] },
+  // ── TIER 1: Best Money Niches ───────────────────────────────────────────────
+  { label: '⭐ Tier 1 — Home Trades', items: [
+    'plumber','emergency plumber','drain cleaning','sewer repair','sewer line replacement','water heater repair','water heater installation','water softener installation',
+    'electrician','electrical contractor','panel upgrade','generator installation','generator repair','EV charger installation','electrical repair',
+    'HVAC contractor','air conditioning repair','AC installation','AC replacement','heating contractor','furnace repair','furnace replacement','heat pump installation','boiler repair','air duct cleaning','duct cleaning','attic insulation',
+    'roofing contractor','roof repair','roof replacement','flat roof repair','metal roofing','gutter installation','gutter cleaning','gutter repair',
+    'general contractor','home renovation','home remodeling','addition contractor',
+    'kitchen remodeler','bathroom remodeler','basement finishing',
+    'foundation repair','waterproofing','crawl space repair','crawl space encapsulation',
+    'water damage restoration','flood restoration','fire damage restoration','smoke damage restoration','mold remediation','mold removal','asbestos removal','asbestos testing',
+    'pest control','termite control','bed bug treatment','rodent control','wildlife removal','mosquito control',
+    'tree service','tree removal','tree trimming','stump grinding','arborist',
+    'locksmith','emergency locksmith','car lockout','rekey locksmith',
+    'garage door repair','garage door installation','garage door opener repair',
+    'septic service','septic pumping','septic repair','well drilling','well pump repair',
+    'solar installation','solar panel installation','solar panel cleaning',
+    'security system installation','home automation','smart home installation','surveillance camera installation',
+    'radon mitigation','radon testing','lead paint testing','mold testing',
+  ]},
+  { label: '⭐ Tier 1 — Automotive', items: [
+    'auto repair','mechanic','car repair','foreign car repair',
+    'tire shop','tire installation','wheel alignment','wheel balancing',
+    'oil change','brake repair','brake replacement','transmission repair','transmission rebuild',
+    'auto body shop','collision repair','dent repair','paint and body',
+    'windshield repair','auto glass repair','windshield replacement',
+    'towing service','roadside assistance','flatbed towing',
+    'car detailing','auto detailing','mobile detailing',
+    'car wash','hand car wash','mobile car wash',
+    'diesel mechanic','diesel repair','truck repair',
+    'RV repair','RV service','motorcycle repair','boat motor repair',
+    'auto electrical repair','car AC repair',
+  ]},
+  { label: '⭐ Tier 1 — Medical & Dental', items: [
+    'dentist','dental clinic','family dentist','cosmetic dentist','pediatric dentist','emergency dentist',
+    'orthodontist','dental implants','teeth whitening','dental office',
+    'chiropractor','chiropractic clinic','chiropractic adjustment',
+    'physical therapy','physical therapist','sports physical therapy',
+    'optometrist','eye doctor','vision center','eye exam',
+    'dermatologist','skin care clinic','acne treatment',
+    'med spa','medical spa','botox clinic','laser hair removal','lip filler','aesthetics clinic',
+    'weight loss clinic','weight loss center','medical weight loss',
+    'urgent care','walk-in clinic','immediate care',
+    'pediatrician','family doctor','primary care','family medicine',
+    'podiatrist','foot doctor','foot care',
+    'audiologist','hearing aid center','hearing test',
+    'OB-GYN','gynecologist','womens health',
+    'psychiatrist','mental health clinic','therapist','counseling',
+    'massage therapy','massage therapist','sports massage',
+    'fertility clinic','IVF clinic',
+    'addiction treatment','drug rehab','alcohol rehab',
+    'pain management clinic','pain doctor',
+  ]},
+  { label: '⭐ Tier 1 — Legal & Financial', items: [
+    'personal injury lawyer','car accident lawyer','slip and fall lawyer',
+    'criminal defense lawyer','DUI lawyer','drug charge lawyer',
+    'family law attorney','divorce lawyer','child custody lawyer',
+    'immigration lawyer','immigration attorney','green card lawyer',
+    'estate planning attorney','will attorney','trust attorney','probate attorney',
+    'bankruptcy lawyer','debt relief attorney',
+    'workers compensation attorney','employment lawyer',
+    'real estate attorney','business attorney',
+    'tax preparation','CPA','accountant','tax accountant','enrolled agent',
+    'bookkeeper','bookkeeping service',
+    'insurance agent','insurance broker','auto insurance','home insurance','life insurance','health insurance',
+    'financial advisor','financial planner','wealth management','retirement planning',
+    'mortgage broker','loan officer','home loan','refinance',
+    'real estate agent','realtor','buyer agent','listing agent',
+    'property management','rental management',
+  ]},
+  { label: '⭐ Tier 1 — Fitness & Wellness', items: [
+    'gym','fitness center','health club','fitness studio',
+    'yoga studio','hot yoga','yoga classes',
+    'pilates studio','pilates classes',
+    'martial arts','karate studio','MMA gym','boxing gym','jiu-jitsu','taekwondo','kickboxing',
+    'personal trainer','private trainer','in-home personal trainer',
+    'dance studio','dance lessons','ballet','salsa dancing','ballroom dancing',
+    'CrossFit gym','CrossFit box',
+    'spin studio','cycling studio',
+    'barre studio',
+    'swimming pool','swim lessons','swim school','swimming lessons',
+    'gymnastics','tumbling classes',
+  ]},
+
+  // ── TIER 2: Strong Secondary Niches ─────────────────────────────────────────
+  { label: '🔵 Tier 2 — Home Services (Secondary)', items: [
+    'handyman','handyman service',
+    'painter','interior painter','exterior painter','painting contractor','cabinet painter',
+    'flooring contractor','hardwood floor installation','hardwood floor refinishing','tile installer','carpet installer','vinyl flooring','laminate flooring',
+    'fence contractor','fence installation','fence repair','wood fence','vinyl fence',
+    'deck builder','deck contractor','deck repair','pergola builder','patio cover',
+    'concrete contractor','driveway paving','concrete repair','concrete resurfacing','stamped concrete',
+    'asphalt paving','asphalt repair','driveway sealing',
+    'masonry contractor','brick repair','stonework','retaining wall',
+    'siding contractor','siding installation','siding repair','stucco contractor','stucco repair',
+    'window installation','window replacement','window repair','door installation','door replacement',
+    'insulation contractor','spray foam insulation','blown-in insulation',
+    'pressure washing','power washing','soft washing','driveway cleaning',
+    'house cleaning','maid service','residential cleaning','deep cleaning','move-out cleaning',
+    'commercial cleaning','janitorial service','office cleaning','medical office cleaning',
+    'carpet cleaning','upholstery cleaning','tile and grout cleaning',
+    'window cleaning','exterior window cleaning',
+    'chimney sweep','chimney repair','chimney cleaning',
+    'dryer vent cleaning',
+    'pool service','pool cleaning','pool repair','pool contractor','pool installation','pool resurfacing',
+    'hot tub repair','spa repair','hot tub installation',
+    'landscaping','landscape design','lawn care','lawn mowing','lawn fertilization',
+    'irrigation system','sprinkler repair','sprinkler installation',
+    'snow removal','snow plowing','ice removal','de-icing',
+    'junk removal','hauling service','dumpster rental','trash removal',
+    'moving company','local movers','long distance movers','furniture moving','piano moving','packing service',
+    'appliance repair','refrigerator repair','washer dryer repair','dishwasher repair','oven repair','microwave repair',
+    'home theater installation','TV mounting','projector installation',
+    'home inspection','pre-purchase inspection','new construction inspection',
+    'Christmas light installation','holiday lighting','outdoor lighting installation',
+    'excavation contractor','land clearing','grading contractor','demolition contractor',
+    'pond installation','water feature installation',
+    'drywall contractor','drywall repair','popcorn ceiling removal','texture painting',
+    'welding service','custom metalwork',
+  ]},
+  { label: '🔵 Tier 2 — Personal Services', items: [
+    'barber shop','barbershop','mens haircut','kids haircut',
+    'hair salon','beauty salon','hair stylist','hair color','highlights','balayage','keratin treatment',
+    'nail salon','manicure','pedicure','acrylic nails','gel nails','nail art',
+    'eyelash salon','lash extensions','lash lift','lash tint',
+    'waxing salon','eyebrow waxing','eyebrow threading','sugaring','Brazilian wax',
+    'tattoo shop','tattoo artist','custom tattoo','tattoo removal',
+    'piercing shop','body piercing','ear piercing',
+    'spa','day spa','facial','dermaplaning','chemical peel','microdermabrasion','hydrafacial',
+    'tanning salon','spray tan','UV tanning',
+    'makeup artist','bridal makeup','prom makeup','permanent makeup','microblading',
+    'lice removal','lice treatment',
+  ]},
+  { label: '🔵 Tier 2 — Childcare & Education', items: [
+    'daycare','childcare center','child development center','infant care',
+    'home daycare','family daycare','in-home daycare','licensed home daycare',
+    'preschool','pre-k program','nursery school','early childhood education',
+    'after school program','after school care','before and after school care','extended care',
+    'summer camp','kids camp','sports camp','STEM camp','art camp','theater camp',
+    'tutoring','tutoring center','academic tutoring','math tutoring','reading tutoring',
+    'test prep','SAT prep','ACT prep','GMAT prep','GRE prep',
+    'learning center','special needs tutoring','dyslexia tutoring',
+    'Montessori school','Waldorf school','private school','charter school',
+    'music lessons','piano lessons','guitar lessons','violin lessons','drum lessons','voice lessons',
+    'singing lessons','choir','voice coaching',
+    'art classes for kids','art studio','pottery class',
+    'language school','ESL classes','Spanish classes','French classes','Mandarin classes',
+    'driving school','drivers ed','behind the wheel',
+    'swim lessons','swimming school',
+    'gymnastics classes','cheerleading',
+    'nanny service','babysitter','childcare provider','au pair service',
+    'respite care','special needs care',
+  ]},
+  { label: '🔵 Tier 2 — Pet Services', items: [
+    'veterinarian','vet clinic','animal hospital','emergency vet','exotic vet',
+    'pet grooming','dog grooming','cat grooming','mobile pet grooming',
+    'dog boarding','pet boarding','cat boarding','doggy daycare','dog daycare',
+    'dog training','dog obedience training','puppy training','service dog training','behavioral dog training',
+    'pet sitting','dog walking','pet sitter',
+    'pet transportation',
+    'pet store','pet supply store',
+    'aquarium service','fish tank cleaning',
+    'farrier','horse care','equine vet',
+  ]},
+  { label: '🔵 Tier 2 — Food & Beverage', items: [
+    'restaurant','diner','family restaurant','steakhouse','seafood restaurant','sushi','Mexican restaurant','Italian restaurant','Chinese restaurant','Indian restaurant','Thai restaurant',
+    'coffee shop','cafe','espresso bar','specialty coffee',
+    'bakery','pastry shop','donut shop','bagel shop',
+    'pizza restaurant','pizza delivery','pizza takeout',
+    'food truck','mobile food vendor',
+    'catering service','event catering','corporate catering','wedding catering',
+    'meal prep service','meal delivery','meal kit',
+    'ice cream shop','creamery','gelato','dessert shop','cheesecake shop',
+    'juice bar','smoothie bar','acai bowl',
+    'sandwich shop','deli','sub shop',
+    'fried chicken','chicken wings',
+    'brunch restaurant','breakfast cafe',
+  ]},
+  { label: '🔵 Tier 2 — Business Services', items: [
+    'printing shop','sign shop','banner printing','large format printing','vinyl wrap printing',
+    'graphic design','logo design','branding agency',
+    'web design','website development','e-commerce development','app development',
+    'digital marketing','SEO agency','social media marketing','Google Ads management','Facebook Ads',
+    'photography','wedding photographer','portrait photographer','commercial photographer','product photography',
+    'videography','video production','wedding videographer','corporate video','drone photography',
+    'IT support','computer repair','laptop repair','data recovery','virus removal',
+    'managed IT services','network setup','network security','cloud services',
+    'staffing agency','temp agency','recruiting agency','headhunter',
+    'payroll service','HR consulting','employee benefits',
+    'business consulting','startup consulting','management consulting',
+    'notary public','mobile notary','loan signing agent',
+    'translation service','interpreter service','document translation',
+    'courier service','local delivery','same-day delivery',
+    'mailing service','mailbox rental','shipping center',
+    'virtual assistant service','answering service','call center',
+    'shredding service','document storage',
+  ]},
+
+  // ── TIER 3: Good but Moderate Fit ────────────────────────────────────────────
+  { label: '🟡 Tier 3 — Specialty Trades', items: [
+    'appliance installation','cabinet installation','custom cabinets','cabinet refacing',
+    'countertop installation','granite countertops','quartz countertops','marble countertops',
+    'shower installation','shower remodel','bathtub refinishing','bathtub reglazing',
+    'furniture repair','furniture restoration','antique restoration',
+    'piano tuning','piano repair','musical instrument repair',
+    'watch repair','clock repair','jewelry repair',
+    'shoe repair','cobbler','leather repair',
+    'tailor','clothing alterations','seamstress','wedding dress alterations',
+    'dry cleaning','laundry service','wash and fold',
+    'embroidery','screen printing','custom shirts','custom uniforms',
+    'biohazard cleanup','crime scene cleanup','hoarding cleanup',
+    'estate cleanout','foreclosure cleanout','attic cleanout',
+    'sewing machine repair',
+    'lawnmower repair','small engine repair','chainsaw repair',
+    'pool table repair','billiard table service',
+  ]},
+  { label: '🟡 Tier 3 — Retail (Specialty)', items: [
+    'hardware store','paint store','paint supply',
+    'nursery','garden center','plant nursery','wholesale plants',
+    'sporting goods','outdoor equipment','camping gear',
+    'hunting supply','fishing tackle','bait shop',
+    'bike shop','bicycle repair','bicycle store',
+    'hobby shop','model trains','RC cars','model kits',
+    'craft store','fabric store','yarn shop','sewing store',
+    'toy store','educational toy store',
+    'baby store','baby supplies','maternity shop',
+    'pool supply store','spa supply',
+    'smoke shop','tobacco shop','cigar shop',
+    'vape shop','e-cigarette store',
+    'supplement store','vitamin shop','health food store',
+    'gun shop','firearms dealer','shooting range','firing range',
+    'archery range','archery supply',
+    'pawn shop',
+    'consignment shop','thrift store','secondhand store','resale shop',
+    'antique shop','antique store','antique mall',
+    'jewelry store','jeweler','custom jewelry',
+    'cell phone repair','phone repair','iPhone repair','screen repair',
+    'electronics repair','computer store',
+    'camera shop','camera repair','photo lab',
+    'art supply store','frame shop','custom framing',
+    'music store','guitar shop','instrument dealer',
+    'bookstore','used bookstore','comic book store',
+    'liquor store','wine shop','beer store','wine and spirits',
+    'clothing boutique','fashion boutique','womens clothing','mens clothing',
+    'shoe store','sneaker store','boot store',
+    'furniture store','mattress store','bedroom furniture',
+    'flooring store','tile store',
+    'lighting store','ceiling fan store',
+    'appliance store','used appliances',
+    'kitchen store','cooking supply',
+    'pet supply','aquarium store',
+    'trophy shop','awards store','engraving',
+    'uniform store','scrubs store',
+    'medical supply store',
+    'office furniture',
+  ]},
+  { label: '🟡 Tier 3 — Entertainment & Recreation', items: [
+    'bowling alley','billiard hall','pool hall',
+    'golf course','mini golf','driving range','golf simulator','indoor golf',
+    'escape room',
+    'trampoline park','indoor playground','soft play',
+    'go-kart track','racing experience',
+    'paintball field','airsoft field',
+    'axe throwing','hatchet throwing',
+    'laser tag','laser arena',
+    'arcade','game center','family entertainment center',
+    'movie theater','cinema','drive-in theater',
+    'live theater','performing arts center',
+    'comedy club','improv theater',
+    'music venue','concert hall',
+    'museum','science museum','children\'s museum','natural history museum',
+    'art gallery','contemporary art gallery',
+    'event venue','banquet hall','wedding venue','reception hall',
+    'conference center','meeting room rental',
+    'recording studio','music studio','rehearsal space',
+    'photography studio','portrait studio',
+    'rock climbing','indoor climbing gym','bouldering gym',
+    'ice skating rink','ice rink',
+    'roller skating rink','roller derby',
+    'batting cage','baseball training',
+    'sports complex','sports facility','indoor sports',
+    'swimming pool (public)','community pool',
+    'water park','splash pad',
+    'amusement park','fun park',
+  ]},
+  { label: '🟡 Tier 3 — Hospitality & Events', items: [
+    'hotel','motel','extended stay hotel','boutique hotel',
+    'bed and breakfast','B&B','inn',
+    'vacation rental management','Airbnb management','short term rental management',
+    'wedding planner','event planner','party planner','corporate event planner',
+    'DJ','wedding DJ','party DJ','mobile DJ',
+    'florist','flower shop','floral design','wedding florist','event florist',
+    'wedding cake bakery','custom cake','specialty cake',
+    'party rental','tent rental','table and chair rental','linen rental',
+    'bounce house rental','inflatable rental','party equipment',
+    'limousine service','limo rental','party bus','charter transportation',
+    'shuttle service','airport shuttle','hotel shuttle',
+    'photo booth rental',
+    'balloon artist','balloon decor','balloon arch',
+    'face painting','children\'s entertainer',
+    'magician','illusionist',
+    'caricature artist',
+    'fire performer','LED performer',
+    'comedian','stand-up comedian',
+    'caterer','wedding caterer','food stations','buffet service',
+    'bartending service','mobile bar','cocktail service',
+    'valet parking','parking management',
+    'event lighting','uplighting','event AV',
+  ]},
+  { label: '🟡 Tier 3 — Automotive (Specialty)', items: [
+    'auto glass tinting','window tinting','car tinting',
+    'car audio installation','car stereo','subwoofer installation',
+    'truck accessories','lift kit installation','truck bed liner','tonneau cover',
+    'auto upholstery','seat repair','leather seat repair',
+    'auto inspection','vehicle inspection','pre-purchase inspection',
+    'smog check','emissions testing',
+    'vehicle wrap','car wrap','fleet wrapping',
+    'auto painting','custom paint job',
+    'car storage','vehicle storage',
+    'used car dealer','buy here pay here','pre-owned vehicles',
+    'motorcycle dealer','powersports dealer',
+    'boat dealer','boat sales','marine dealer',
+    'RV dealer','RV sales','camper dealer',
+    'auto parts store','salvage yard','junkyard',
+    'car rental','auto rental',
+    'fleet maintenance','fleet repair',
+    'parking lot striping',
+    'mobile mechanic',
+  ]},
+
+  // ── TIER 4: Complex / Long Sales Cycle ───────────────────────────────────────
+  { label: '🔴 Tier 4 — Medical Facilities', items: [
+    'surgery center','ambulatory surgery center','outpatient surgery',
+    'dialysis center','kidney care',
+    'cancer treatment center','oncology clinic','radiation therapy','chemotherapy',
+    'rehabilitation center','inpatient rehab','stroke rehab',
+    'nursing home','skilled nursing facility','assisted living','memory care','senior care',
+    'home health agency','home care agency','in-home nursing',
+    'hospice','palliative care',
+    'blood bank','plasma donation center','plasma center',
+    'imaging center','MRI center','CT scan','X-ray center','ultrasound clinic',
+    'laboratory','medical lab','diagnostic center','blood testing lab',
+    'sleep clinic','sleep study center','sleep lab',
+    'orthopedic surgeon','orthopedic clinic','joint replacement','sports medicine surgeon',
+    'spine surgeon','neurosurgeon',
+    'cardiologist','heart clinic','cardiac care',
+    'neurology clinic','neurologist',
+    'gastroenterologist','GI clinic','colonoscopy',
+    'urology clinic','urologist',
+    'endocrinologist','diabetes clinic','thyroid clinic',
+    'allergy clinic','allergy testing','immunology',
+    'vascular clinic','vascular surgeon',
+    'plastic surgeon','cosmetic surgeon','breast augmentation',
+    'medical equipment','durable medical equipment','DME supplier',
+    'compounding pharmacy','specialty pharmacy',
+    'occupational therapy','occupational therapist',
+    'speech therapy','speech pathologist','speech language pathologist',
+    'ABA therapy','autism therapy','behavioral therapy',
+  ]},
+  { label: '🔴 Tier 4 — Education & Training', items: [
+    'community college','trade school','vocational school','technical college',
+    'cosmetology school','beauty school','esthetics school',
+    'culinary school','cooking school',
+    'real estate school','real estate licensing',
+    'CDL training','truck driving school','commercial driver license',
+    'flight school','pilot training','aviation school',
+    'CPR training','first aid training','AED training',
+    'OSHA training','safety certification',
+    'welding school','welding training',
+    'coding bootcamp','programming school',
+    'bartending school',
+    'massage school','massage therapy school',
+    'pharmacy technician school',
+    'medical assistant school','CNA training',
+    'security guard training','security certification',
+  ]},
+  { label: '🔴 Tier 4 — Industrial & Commercial', items: [
+    'commercial HVAC','commercial HVAC repair','industrial HVAC',
+    'commercial plumbing','industrial plumbing',
+    'commercial electrical','industrial electrician',
+    'commercial roofing','industrial roofing','flat commercial roofing',
+    'fire protection','fire sprinkler system','fire alarm system','fire suppression',
+    'elevator service','elevator repair','elevator maintenance',
+    'crane service','rigging company',
+    'forklift repair','forklift rental','forklift certification',
+    'heavy equipment rental','equipment rental','construction equipment',
+    'industrial cleaning','factory cleaning','warehouse cleaning',
+    'waste management','commercial recycling','hazardous waste disposal',
+    'environmental consulting','remediation company',
+    'commercial refrigeration','walk-in cooler repair','reach-in cooler repair',
+    'commercial kitchen equipment repair','restaurant equipment repair',
+    'sign installation','exterior signage','neon sign repair',
+    'commercial locksmith','access control system','keycard system',
+    'commercial fence','chain link fence','security fence',
+    'commercial painting','industrial painting','epoxy floor coating',
+    'commercial landscaping','grounds maintenance','commercial lawn care',
+    'commercial pest control','commercial exterminator',
+    'parking lot paving','parking lot maintenance','concrete parking lot',
+    'commercial snow removal','parking lot snow removal',
+    'compressed air systems','industrial air compressor',
+    'commercial generator','standby generator','industrial generator',
+  ]},
+  { label: '🔴 Tier 4 — Professional Services', items: [
+    'title company','escrow company','closing company',
+    'home warranty','home warranty company',
+    'property appraiser','home appraiser','real estate appraisal',
+    'surveying company','land surveyor','survey company',
+    'architecture firm','architect','architectural design',
+    'engineering firm','structural engineer','civil engineer','MEP engineer',
+    'interior designer','interior design','commercial interior design',
+    'private investigator','PI agency','surveillance investigator',
+    'security guard service','security company','armed security',
+    'bail bondsman','bail bonds',
+    'process server','legal courier',
+    'court reporting','deposition service',
+    'disability attorney','social security attorney',
+    'civil attorney','litigation attorney',
+    'trademark attorney','patent attorney','intellectual property',
+    'business formation','registered agent',
+    'commercial real estate','commercial realtor',
+    'self storage','storage facility',
+    'funeral home','cremation service','mortuary',
+    'auction house','estate auction','online auction',
+  ]},
 ];
 
 function app() {
@@ -1101,7 +1601,10 @@ function app() {
     logLines: [],
     logs: { main: [], detail: [], website: [], reviews: [] },
     activeLog: 'main',
-    logBadges: { main: 0, detail: 0, website: 0, reviews: 0 },
+    logBadges: { main: 0, detail: 0, website: 0, reviews: 0, network: 0 },
+    networkLog: [],
+    networkLastId: 0,
+    activeClaims: [], // [{zip, category, claimed_by}] — what every computer is scraping right now
     session: { jobs: 0, found: 0, saved: 0, duplicates: 0 },
 
     // Leads
@@ -1116,6 +1619,8 @@ function app() {
     reviewScraping: false,
     detailScraping: false,
     websiteScraping: false,
+    photoScraping: false,
+    sheetsBackingUp: false,
     formSending: false,
     masterScraping: false,
     formModal: { open: false, sender: { name: '', email: '', phone: '', message: "Hi, I saw {name} on Google Maps and noticed you don't have a website. I build websites, apps and AI assistants. Happy to help if you're interested. Feel free to reply here or call me." } },
@@ -1131,6 +1636,7 @@ function app() {
     scheduleDays: [1,2,3,4,5],
     stats: { total: 0 },
     toast: { show: false, msg: '' },
+    expandedPhones: new Set(),
     detailPanel: { open: false, tab: 'info', lead: {}, reviews: [], loadingDetails: false, loadingReviews: false },
 
     // SMS templates
@@ -1160,6 +1666,28 @@ function app() {
       if (!this.catSearch) return ALL_CATEGORIES;
       const q = this.catSearch.toLowerCase();
       return ALL_CATEGORIES.map(g => ({ ...g, items: g.items.filter(c => c.toLowerCase().includes(q)) })).filter(g => g.items.length > 0);
+    },
+
+    // Map of zip → [{category, claimed_by}] for active claims on that zip
+    get claimedZipMap() {
+      const m = new Map();
+      for (const c of this.activeClaims) {
+        if (!m.has(c.zip)) m.set(c.zip, []);
+        m.get(c.zip).push(c);
+      }
+      return m;
+    },
+    // Map of category → [{zip, claimed_by}] for active claims on that category
+    get claimedCatMap() {
+      const m = new Map();
+      for (const c of this.activeClaims) {
+        if (!m.has(c.category)) m.set(c.category, []);
+        m.get(c.category).push(c);
+      }
+      return m;
+    },
+    claimTooltip(claims) {
+      return claims.map(c => `${c.claimed_by} → ${c.category || c.zip}`).join('\n');
     },
 
     get geoGrouped() {
@@ -1238,9 +1766,33 @@ function app() {
       this.$watch('pageSize', () => { this.leadPage = 1; });
 
       this.loadStats();
+      // Poll network activity from all computers every 4 seconds
+      setInterval(async () => {
+        const rows = await fetch('/api/activity?since=' + this.networkLastId).then(r => r.json()).catch(() => []);
+        if (Array.isArray(rows) && rows.length) {
+          this.networkLastId = rows[rows.length - 1].id;
+          const seen = new Set(this.networkLog.map(l => l.id));
+          const fresh = rows.filter(r => !seen.has(r.id));
+          if (fresh.length) {
+            this.networkLog.push(...fresh);
+            if (this.networkLog.length > 500) this.networkLog = this.networkLog.slice(-500);
+            if (this.activeLog !== 'network') this.logBadges.network = (this.logBadges.network || 0) + fresh.length;
+            this.$nextTick(() => { const b = document.getElementById('log-box-network'); if (b) b.scrollTop = b.scrollHeight; });
+          }
+        }
+      }, 4000);
+
+      // Poll active claims (what every computer is scraping right now) every 4s
+      const pollClaims = async () => {
+        this.activeClaims = await fetch('/api/scrape/claims').then(r => r.json()).catch(() => []);
+      };
+      pollClaims();
+      setInterval(pollClaims, 4000);
+
       fetch('/api/scrape/status').then(r => r.json()).then(s => {
         this.scraping = !!s.scraping;
         this.stopping = !!s.stopping;
+        if (s.session) this.session = { ...s.session };
       }).catch(() => {});
       this.connectSSE();
       // Prefetch geo states list
@@ -1339,8 +1891,22 @@ function app() {
 
     connectSSE() {
       if (this.sse) this.sse.close();
+      if (this._sseReconnectTimer) { clearTimeout(this._sseReconnectTimer); this._sseReconnectTimer = null; }
       const es = new EventSource('/api/scrape/events');
       this.sse = es;
+      this.sseConnected = true;
+      es.onerror = () => {
+        this.sseConnected = false;
+        es.close();
+        this.sse = null;
+        // Re-sync scraping state from server and schedule reconnect
+        fetch('/api/scrape/status').then(r => r.json()).catch(() => ({ scraping: false, stopping: false })).then(s => {
+          this.scraping = s.scraping ?? false;
+          this.stopping = s.stopping ?? false;
+          if (s.session) this.session = { ...s.session };
+        });
+        this._sseReconnectTimer = setTimeout(() => this.connectSSE(), 3000);
+      };
       es.onmessage = (e) => {
         const d = JSON.parse(e.data);
         const src = d.source || 'main';
@@ -1377,6 +1943,56 @@ function app() {
       };
     },
 
+    async masterScrapeFromScraper() {
+      if (!this.selectedZips.size || !this.selectedCats.size) return;
+      this.masterScraping = true;
+      this.notify('🚀 Master Scraper: Step 1/4 — Detail Scrape (Maps + full details)...');
+
+      // Step 1: Detail Scrape — gets everything (name, phone, address, hours, amenities,
+      // social links, website URL) in one pass. No separate fast scrape needed.
+      await this.startScrape(true);
+
+      // Wait for scrape to finish by polling status
+      await new Promise(resolve => {
+        const poll = setInterval(async () => {
+          const s = await fetch('/api/scrape/status').then(r => r.json()).catch(() => ({ scraping: true }));
+          if (!s.scraping) { clearInterval(poll); resolve(); }
+        }, 2000);
+      });
+
+      await this.loadLeads();
+      const ids = this.leads.map(l => l.id);
+      if (!ids.length) { this.masterScraping = false; return; }
+
+      this.notify(`🚀 Master Scraper: Step 2/4 — scraping websites for ${ids.length} lead(s)...`);
+      try {
+        this.websiteScraping = true;
+        await fetch('/api/leads/scrape-websites-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+        this.websiteScraping = false;
+        this.notify('✅ Step 2/4 done — websites scraped');
+      } catch { this.websiteScraping = false; }
+
+      this.notify(`🚀 Master Scraper: Step 3/4 — scraping reviews for ${ids.length} lead(s)...`);
+      try {
+        this.reviewScraping = true;
+        await fetch('/api/leads/scrape-reviews-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, max: 50 }) });
+        this.reviewScraping = false;
+        this.notify('✅ Step 3/4 done — reviews scraped');
+      } catch { this.reviewScraping = false; }
+
+      this.notify(`🚀 Master Scraper: Step 4/4 — scraping photos for ${ids.length} lead(s)...`);
+      try {
+        this.photoScraping = true;
+        await fetch('/api/leads/scrape-photos-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, max: 20 }) });
+        this.photoScraping = false;
+        this.notify('✅ Step 4/4 done — photos collected');
+      } catch { this.photoScraping = false; }
+
+      this.masterScraping = false;
+      await this.loadLeads();
+      this.notify(`🎉 Master Scraper complete — ${ids.length} leads fully enriched`);
+    },
+
     async startScrape(detailFirst = false) {
       if (!this.selectedZips.size || !this.selectedCats.size) return;
       // Sync real server state — fixes "stuck in stopping" after SSE drop
@@ -1406,8 +2022,20 @@ function app() {
 
     async stopScrape() {
       this.stopping = true;
-      await fetch('/api/scrape/stop', { method: 'POST' });
+      await fetch('/api/scrape/stop', { method: 'POST' }).catch(() => {});
       this.notify('Stop signal sent');
+      // Poll until server confirms fully stopped — handles case where done SSE is missed
+      const poll = setInterval(async () => {
+        const s = await fetch('/api/scrape/status').then(r => r.json()).catch(() => null);
+        if (s && !s.scraping && !s.stopping) {
+          this.scraping = false;
+          this.stopping = false;
+          clearInterval(poll);
+          if (this._stopPollTimeout) { clearTimeout(this._stopPollTimeout); this._stopPollTimeout = null; }
+        }
+      }, 800);
+      // Hard reset after 12 seconds no matter what
+      this._stopPollTimeout = setTimeout(() => { clearInterval(poll); this.scraping = false; this.stopping = false; }, 12000);
     },
 
     async loadLeads() {
@@ -1443,6 +2071,7 @@ function app() {
 
     get sortedLeads() {
       const numeric = new Set(['id', 'rating', 'review_count', 'has_website']);
+      const dates = new Set(['created_at', 'updated_at']);
       const key = this.sort.key;
       const dir = this.sort.dir === 'asc' ? 1 : -1;
       return [...this.filteredLeads].sort((a, b) => {
@@ -1452,6 +2081,9 @@ function app() {
           av = av == null || av === '' ? -Infinity : Number(av);
           bv = bv == null || bv === '' ? -Infinity : Number(bv);
           return (av - bv) * dir;
+        }
+        if (dates.has(key)) {
+          return String(av ?? '').localeCompare(String(bv ?? '')) * dir;
         }
         return String(av ?? '').localeCompare(String(bv ?? ''), undefined, { numeric: true, sensitivity: 'base' }) * dir;
       });
@@ -1532,6 +2164,46 @@ function app() {
       });
     },
 
+    async backupToSheets() {
+      this.sheetsBackingUp = true;
+      try {
+        const res = await fetch('/api/backup/sheets', { method: 'POST' });
+        const d = await res.json();
+        if (d.ok) {
+          this.notify(`☁ ${d.rows} leads exported to Google Sheets`);
+          window.open(d.url, '_blank');
+        } else {
+          alert(`Google Sheets export failed:\n\n${d.error}`);
+        }
+      } catch {
+        this.notify('❌ Sheets backup failed');
+      } finally {
+        this.sheetsBackingUp = false;
+      }
+    },
+
+    async bulkScrapePhotos() {
+      if (!this.selected.size) return;
+      this.photoScraping = true;
+      const ids = [...this.selected];
+      this.section = 'scraper';
+      try {
+        const res = await fetch('/api/leads/scrape-photos-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids, max: 20 }),
+        });
+        const d = await res.json().catch(() => ({ results: [] }));
+        const total = (d.results ?? []).reduce((s, r) => s + (r.count ?? 0), 0);
+        await this.loadLeads();
+        this.notify(`✅ Photos done — ${total} photo(s) across ${ids.length} lead(s)`);
+      } catch {
+        this.notify('❌ Photo scrape failed');
+      } finally {
+        this.photoScraping = false;
+      }
+    },
+
     openFormSender() {
       if (!this.selected.size) return;
       this.formModal.open = true;
@@ -1600,10 +2272,11 @@ function app() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ids }),
         });
-        await r2.json().catch(() => null);
+        const d2 = await r2.json().catch(() => ({ results: [] }));
+        const ok2 = (d2.results ?? []).filter(r => r.success).length;
         this.websiteScraping = false;
         await this.loadLeads();
-        this.notify(`✅ Step 2/3 done — websites scraped for ${ids.length}`);
+        this.notify(`✅ Step 2/3 done — websites scraped for ${ok2}/${ids.length}`);
       } catch (e) {
         this.websiteScraping = false;
         this.notify('❌ Step 2/3 failed (websites)');
@@ -1620,10 +2293,29 @@ function app() {
         const d3 = await r3.json().catch(() => ({ results: [] }));
         const loaded = (d3.results ?? []).reduce((sum, r) => sum + (r.count ?? 0), 0);
         this.reviewScraping = false;
-        this.notify(`✅ Step 3/3 done — ${loaded} review(s) loaded`);
+        await this.loadLeads();
+        this.notify(`✅ Step 3/4 done — ${loaded} review(s) loaded`);
       } catch (e) {
         this.reviewScraping = false;
-        this.notify('❌ Step 3/3 failed (reviews)');
+        this.notify('❌ Step 3/4 failed (reviews)');
+      }
+
+      // Step 4: Scrape photos
+      try {
+        this.photoScraping = true;
+        const r4 = await fetch('/api/leads/scrape-photos-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids, max: 20 }),
+        });
+        const d4 = await r4.json().catch(() => ({ results: [] }));
+        const photos = (d4.results ?? []).reduce((sum, r) => sum + (r.count ?? 0), 0);
+        this.photoScraping = false;
+        await this.loadLeads();
+        this.notify(`✅ Step 4/4 done — ${photos} photo(s) collected`);
+      } catch (e) {
+        this.photoScraping = false;
+        this.notify('❌ Step 4/4 failed (photos)');
       }
 
       this.masterScraping = false;
@@ -1637,6 +2329,15 @@ function app() {
       this.selected = new Set();
       await this.loadLeads();
       this.notify('All leads deleted');
+    },
+
+    async wipeDatabase() {
+      if (!confirm('WIPE EVERYTHING from Turso?\n\nThis deletes ALL leads, reviews, SMS queue, and scraped zip history from the cloud. Cannot be undone.')) return;
+      await fetch('/api/db/wipe', { method: 'POST' });
+      this.selected = new Set();
+      this.leads = [];
+      this.stats.total = 0;
+      this.notify('Database wiped — ready to scrape fresh');
     },
 
     async bulkDelete() {
@@ -1806,6 +2507,17 @@ function app() {
     // Strips extensions (x123 / ext 123 / #123), country codes (+1 / 1-),
     // dots, dashes, spaces, parens — whatever format it arrives in.
     // Returns the original trimmed string if it can't be reduced to 10 digits.
+    timeAgo(ts) {
+      if (!ts) return '';
+      const sec = Math.floor((Date.now() - new Date(ts + 'Z').getTime()) / 1000);
+      if (sec < 60) return 'just now';
+      if (sec < 3600) return Math.floor(sec / 60) + 'm ago';
+      if (sec < 86400) return Math.floor(sec / 3600) + 'h ago';
+      if (sec < 604800) return Math.floor(sec / 86400) + 'd ago';
+      if (sec < 2592000) return Math.floor(sec / 604800) + 'w ago';
+      return new Date(ts + 'Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    },
+
     normalizePhone(p) {
       if (!p) return p;
       // Remove extensions: "x123", "ext 45", "ext. 45", "#123"
@@ -1844,6 +2556,10 @@ function app() {
 
     get detailAmenities() {
       try { return JSON.parse(this.detailPanel.lead.amenities || '[]'); } catch { return []; }
+    },
+
+    get detailPanelPhotos() {
+      try { return JSON.parse(this.detailPanel.lead.maps_photos || '[]'); } catch { return []; }
     },
 
     websiteEmails() {

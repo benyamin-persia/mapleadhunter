@@ -7,6 +7,7 @@ export interface WebsiteData {
   socialLinks: { platform: string; url: string }[];
   contactUrl: string;
   hasContactForm: boolean;
+  ogImage: string;
 }
 
 // Pages to prioritize when crawling (higher score = visited first)
@@ -77,6 +78,7 @@ async function extractPageData(page: { evaluate: Function; url: () => string }, 
     const internalLinks: string[] = [];
     let contactUrl = '';
     let hasContactForm = false;
+    let ogImage = '';
 
     const phoneAttrRx = /^[\d\s().+\-]{7,20}$/;
 
@@ -188,17 +190,51 @@ async function extractPageData(page: { evaluate: Function; url: () => string }, 
       } catch { /* cross-origin — blocked */ }
     });
 
-    // ── 8. Social links ───────────────────────────────────────────────────
+    // ── 8. Social links — a[href], data attrs, onclick, raw HTML (all inlined — no named fns) ──
     document.querySelectorAll('a[href]').forEach((a) => {
       const href = (a as HTMLAnchorElement).href ?? '';
-      for (let si = 0; si < pts.length; si++) {
-        const sp = pts[si]!;
+      if (!href) return;
+      for (let si8 = 0; si8 < pts.length; si8++) {
+        const sp = pts[si8]!;
         if (href.includes(sp.pattern) && !socialLinks.find((s) => s.platform === sp.platform)) {
-          socialLinks.push({ platform: sp.platform, url: href });
-          break;
+          socialLinks.push({ platform: sp.platform, url: href }); break;
         }
       }
     });
+    document.querySelectorAll('[data-href],[data-url],[data-link]').forEach((el) => {
+      const href = el.getAttribute('data-href') ?? el.getAttribute('data-url') ?? el.getAttribute('data-link') ?? '';
+      if (!href) return;
+      for (let si8 = 0; si8 < pts.length; si8++) {
+        const sp = pts[si8]!;
+        if (href.includes(sp.pattern) && !socialLinks.find((s) => s.platform === sp.platform)) {
+          socialLinks.push({ platform: sp.platform, url: href }); break;
+        }
+      }
+    });
+    document.querySelectorAll('[onclick]').forEach((el) => {
+      const ocm = (el.getAttribute('onclick') ?? '').match(/https?:\/\/[^\s'"]+/);
+      const href = ocm?.[0] ?? '';
+      if (!href) return;
+      for (let si8 = 0; si8 < pts.length; si8++) {
+        const sp = pts[si8]!;
+        if (href.includes(sp.pattern) && !socialLinks.find((s) => s.platform === sp.platform)) {
+          socialLinks.push({ platform: sp.platform, url: href }); break;
+        }
+      }
+    });
+    const socialRx = /https?:\/\/[^\s"'<>)\]]*(?:facebook|instagram|twitter|linkedin|youtube|tiktok|yelp|pinterest)\.com\/[^\s"'<>)\]]+/gi;
+    let socialM: RegExpExecArray | null;
+    const htmlForSocial = document.documentElement.innerHTML;
+    while ((socialM = socialRx.exec(htmlForSocial)) !== null) {
+      const href = socialM[0] ?? '';
+      if (!href) continue;
+      for (let si8 = 0; si8 < pts.length; si8++) {
+        const sp = pts[si8]!;
+        if (href.includes(sp.pattern) && !socialLinks.find((s) => s.platform === sp.platform)) {
+          socialLinks.push({ platform: sp.platform, url: href }); break;
+        }
+      }
+    }
 
     // ── 9. Internal links ─────────────────────────────────────────────────
     document.querySelectorAll('a[href]').forEach((a) => {
@@ -225,12 +261,32 @@ async function extractPageData(page: { evaluate: Function; url: () => string }, 
         hasContactForm = true;
     });
 
-    return { phones, emails, socialLinks, internalLinks, contactUrl, hasContactForm };
+    ogImage =
+      (document.querySelector('meta[property="og:image"]') as HTMLMetaElement | null)?.content ||
+      (document.querySelector('meta[name="twitter:image"]') as HTMLMetaElement | null)?.content ||
+      (document.querySelector('link[rel="apple-touch-icon"]') as HTMLLinkElement | null)?.href ||
+      '';
+
+    return { phones, emails, socialLinks, internalLinks, contactUrl, hasContactForm, ogImage };
   }, patterns);
 }
 
+function isValidNANP(raw: string): boolean {
+  const digits = raw.replace(/\D/g, '');
+  const d10 = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits;
+  if (d10.length !== 10) return false;
+  const area = d10.slice(0, 3);
+  const exchange = d10.slice(3, 6);
+  if (area[0] === '0' || area[0] === '1') return false; // invalid area code
+  if (exchange[0] === '0' || exchange[0] === '1') return false; // invalid exchange
+  if (area === '555') return false; // reserved/fake
+  if (/^(\d)\1{9}$/.test(d10)) return false; // all same digit e.g. 0000000000
+  if (d10 === '1234567890' || d10 === '0123456789') return false;
+  return true;
+}
+
 export async function scrapeWebsite(websiteUrl: string): Promise<WebsiteData> {
-  const empty: WebsiteData = { emails: [], phones: [], socialLinks: [], contactUrl: '', hasContactForm: false };
+  const empty: WebsiteData = { emails: [], phones: [], socialLinks: [], contactUrl: '', hasContactForm: false, ogImage: '' };
 
   const browser = await launchStealthBrowser();
   const context = await newStealthContext(browser);
@@ -240,6 +296,7 @@ export async function scrapeWebsite(websiteUrl: string): Promise<WebsiteData> {
   const allSocials = new Map<string, string>(); // platform → url
   let contactUrl = '';
   let hasContactForm = false;
+  let ogImage = '';
 
   const visited = new Set<string>();
   const MAX_PAGES = 15;
@@ -361,6 +418,7 @@ export async function scrapeWebsite(websiteUrl: string): Promise<WebsiteData> {
         data.phones.forEach((p: string) => allPhones.add(p));
         data.socialLinks.forEach((s: { platform: string; url: string }) => { if (!allSocials.has(s.platform)) allSocials.set(s.platform, s.url); });
         if (!contactUrl && data.contactUrl) contactUrl = data.contactUrl;
+        if (!ogImage && data.ogImage) ogImage = data.ogImage;
         if (data.hasContactForm) {
           hasContactForm = true;
           if (!contactUrl) contactUrl = next.url;
@@ -382,10 +440,11 @@ export async function scrapeWebsite(websiteUrl: string): Promise<WebsiteData> {
 
     const result: WebsiteData = {
       emails: [...allEmails].filter((e) => e.length < 100),
-      phones: [...allPhones],
+      phones: [...allPhones].filter(isValidNANP).slice(0, 5),
       socialLinks: [...allSocials.entries()].map(([platform, url]) => ({ platform, url })),
       contactUrl,
       hasContactForm,
+      ogImage,
     };
 
     logger.info({ url: base, pages: visited.size, emails: result.emails.length, phones: result.phones.length, hasForm: result.hasContactForm }, 'website crawl done');

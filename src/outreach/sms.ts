@@ -26,7 +26,7 @@ const TEMPLATES: Record<string, (name: string, location: string) => string> = {
 
 export async function sendSms(leadId: number, template = 'standard', customBody?: string): Promise<void> {
   const log = leadLogger(leadId);
-  const lead = getLeadById(leadId);
+  const lead = await getLeadById(leadId);
 
   if (!lead) throw new Error(`Lead ${leadId} not found`);
   if (!lead.phone) throw new Error(`Lead ${leadId} has no phone number`);
@@ -74,6 +74,6 @@ export async function sendSms(leadId: number, template = 'standard', customBody?
   await execFileAsync(ADB, ['shell', 'input', 'tap', String(cx), String(cy)]);
   await new Promise((r) => setTimeout(r, 1000));
 
-  logOutreach({ leadId, zip: lead.zip, phone: lead.phone, channel: 'sms', message });
+  await logOutreach({ leadId, zip: lead.zip, phone: lead.phone, channel: 'sms', message });
   log.info('SMS sent via ADB');
 }

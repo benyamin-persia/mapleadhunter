@@ -12,6 +12,7 @@ export interface BusinessCard {
   mapsUrl: string;
   websiteUrl: string;
   hasWebsite: boolean;
+  thumbnail: string;
 }
 
 /**
@@ -67,7 +68,12 @@ export async function extractAllCards(page: Page): Promise<BusinessCard[]> {
       const openEl = el.querySelector('span.ePhySb, span[class*="open"], span[class*="Open"]');
       const openNow = openEl?.textContent?.trim() ?? '';
 
-      return { name, phone, address, category, rating, reviewCount, priceLevel, openNow, mapsUrl, websiteUrl, hasWebsite };
+      const thumbImg = el.querySelector('img[src*="googleusercontent"]') as HTMLImageElement | null;
+      const thumbnail = thumbImg?.src
+        ? thumbImg.src.replace(/=w\d+-h\d+/, '=w400-h300')
+        : '';
+
+      return { name, phone, address, category, rating, reviewCount, priceLevel, openNow, mapsUrl, websiteUrl, hasWebsite, thumbnail };
     }).filter((b) => b.name.length > 0);
   });
 }
