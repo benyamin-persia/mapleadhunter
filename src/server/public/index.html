@@ -135,7 +135,10 @@
             x-text="'Resume ('+resumable.pending+')'"></button>
           <button x-show="scraping" @click="pauseScrape()" :disabled="stopping"
             class="bg-amber-500 hover:bg-amber-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50">Pause</button>
-          <button x-show="scraping||masterScraping" @click="stopScrape()" :disabled="stopping" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50" x-text="stopping?'Stopping...':'Stop'"></button>
+          <button x-show="scraping||masterScraping" @click="stopScrape()" :disabled="stopping||secondaryStopping" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50" x-text="(stopping||secondaryStopping)?'Stopping...':'Stop'"></button>
+          <button x-show="!scraping && (websiteScraping||detailScraping||reviewScraping||photoScraping)" @click="stopSecondaryScrape()" :disabled="secondaryStopping"
+            class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50"
+            x-text="secondaryStopping?'Stopping...':'🛑 Stop'"></button>
         </div>
       </div>
 
@@ -465,6 +468,11 @@
             class="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-1.5 px-4 rounded-xl text-sm flex items-center gap-2 ring-2 ring-indigo-300">
             🚀 <span x-text="masterScraping?'Scraping all...':'Scrape All ('+selected.size+')'"></span>
           </button>
+          <button x-show="masterScraping||detailScraping||websiteScraping||reviewScraping||photoScraping"
+            @click="stopSecondaryScrape()" :disabled="secondaryStopping"
+            class="bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white font-bold py-1.5 px-4 rounded-xl text-sm"
+            x-text="secondaryStopping?'Stopping...':'🛑 Stop'">
+          </button>
           <div class="w-px h-6 bg-slate-200"></div>
           <select x-model="activeTemplate"
             class="border border-slate-200 rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
@@ -500,6 +508,10 @@
             Review workers
             <input x-model.number="form.reviewWorkers" type="number" min="1" max="10"
               class="w-14 border border-slate-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400">
+          </label>
+          <label class="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
+            <input type="checkbox" x-model="form.forceRescrape" class="accent-orange-500 w-3.5 h-3.5">
+            <span :class="form.forceRescrape ? 'text-orange-600 font-semibold' : ''">Force re-scrape</span>
           </label>
           <button @click="bulkDelete()" :disabled="masterScraping"
             class="bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white font-semibold py-1.5 px-4 rounded-xl text-sm">
@@ -1631,7 +1643,7 @@ function app() {
     catSearch: '',
 
     // Scraper
-    form: { maxPerZip: 500, workers: 1, reviewWorkers: 1, skipScraped: true },
+    form: { maxPerZip: 500, workers: 1, reviewWorkers: 1, skipScraped: true, forceRescrape: false },
     logLines: [],
     logs: { main: [], detail: [], website: [], reviews: [], photos: [], sms: [], forms: [] },
     activeLog: 'main',
@@ -1663,6 +1675,7 @@ function app() {
     detailScraping: false,
     websiteScraping: false,
     photoScraping: false,
+    secondaryStopping: false,
     sheetsBackingUp: false,
     formSending: false,
     masterScraping: false,
@@ -2210,7 +2223,7 @@ function app() {
       this.notify(`🚀 Master Scraper: Step 2/4 — scraping websites for ${ids.length} lead(s)...`);
       try {
         this.websiteScraping = true;
-        await fetch('/api/leads/scrape-websites-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, workers: this.form.workers }) });
+        await fetch('/api/leads/scrape-websites-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, workers: this.form.workers, force: this.form.forceRescrape }) });
         this.websiteScraping = false;
         this.notify('✅ Step 2/4 done — websites scraped');
       } catch { this.websiteScraping = false; }
@@ -2218,7 +2231,7 @@ function app() {
       this.notify(`🚀 Master Scraper: Step 3/4 — scraping reviews for ${ids.length} lead(s)...`);
       try {
         this.reviewScraping = true;
-        await fetch('/api/leads/scrape-reviews-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, max: 50, reviewWorkers: this.form.reviewWorkers }) });
+        await fetch('/api/leads/scrape-reviews-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, max: 50, reviewWorkers: this.form.reviewWorkers, force: this.form.forceRescrape }) });
         this.reviewScraping = false;
         this.notify('✅ Step 3/4 done — reviews scraped');
       } catch { this.reviewScraping = false; }
@@ -2226,7 +2239,7 @@ function app() {
       this.notify(`🚀 Master Scraper: Step 4/4 — scraping photos for ${ids.length} lead(s)...`);
       try {
         this.photoScraping = true;
-        await fetch('/api/leads/scrape-photos-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, max: 20, workers: this.form.workers }) });
+        await fetch('/api/leads/scrape-photos-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, max: 20, workers: this.form.workers, force: this.form.forceRescrape }) });
         this.photoScraping = false;
         this.notify('✅ Step 4/4 done — photos collected');
       } catch { this.photoScraping = false; }
@@ -2318,6 +2331,7 @@ function app() {
 
     async stopScrape() {
       this.stopping = true;
+      this.secondaryStopping = true;
       await fetch('/api/scrape/stop', { method: 'POST' }).catch(() => {});
       this.notify('Stop signal sent');
       // Poll until server confirms fully stopped — handles case where done SSE is missed
@@ -2334,6 +2348,20 @@ function app() {
       }, 800);
       // Hard reset after 12 seconds no matter what
       this._stopPollTimeout = setTimeout(() => { clearInterval(poll); this.scraping = false; this.stopping = false; }, 12000);
+    },
+
+    async stopSecondaryScrape() {
+      this.secondaryStopping = true;
+      await fetch('/api/scrape/stop-secondary', { method: 'POST' }).catch(() => {});
+      this.notify('Stop signal sent — finishing current item(s)...');
+      // Auto-clear once all secondary scrapers finish
+      const poll = setInterval(() => {
+        if (!this.websiteScraping && !this.detailScraping && !this.reviewScraping && !this.photoScraping && !this.masterScraping) {
+          this.secondaryStopping = false;
+          clearInterval(poll);
+        }
+      }, 500);
+      setTimeout(() => { clearInterval(poll); this.secondaryStopping = false; }, 60000);
     },
 
     async loadLeads() {
@@ -2458,7 +2486,7 @@ function app() {
       const res = await fetch('/api/leads/scrape-reviews-bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids, max: 50, force: true, reviewWorkers: this.form.reviewWorkers }),
+        body: JSON.stringify({ ids, max: 50, force: this.form.forceRescrape, reviewWorkers: this.form.reviewWorkers }),
       });
       const data = await res.json().catch(() => ({ results: [] }));
       const loaded = (data.results ?? []).reduce((sum, r) => sum + (r.count ?? 0), 0);
@@ -2480,7 +2508,7 @@ function app() {
       fetch('/api/leads/scrape-websites-bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids, workers: this.form.workers }),
+        body: JSON.stringify({ ids, workers: this.form.workers, force: this.form.forceRescrape }),
       }).then(async () => {
         this.websiteScraping = false;
         await this.loadLeads();
@@ -2518,7 +2546,7 @@ function app() {
         const res = await fetch('/api/leads/scrape-photos-bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids, max: 20, workers: this.form.workers }),
+          body: JSON.stringify({ ids, max: 20, workers: this.form.workers, force: this.form.forceRescrape }),
         });
         const d = await res.json().catch(() => ({ results: [] }));
         const total = (d.results ?? []).reduce((s, r) => s + (r.count ?? 0), 0);
@@ -2558,7 +2586,7 @@ function app() {
       const res = await fetch('/api/leads/scrape-details-bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids, workers: this.form.workers }),
+        body: JSON.stringify({ ids, workers: this.form.workers, force: this.form.forceRescrape }),
       });
       const data = await res.json().catch(() => ({ results: [] }));
       const ok = (data.results ?? []).filter(r => r.success).length;
@@ -2570,6 +2598,7 @@ function app() {
     async masterScrapeAll() {
       if (!this.selected.size) return;
       this.masterScraping = true;
+      this.secondaryStopping = false;
       const ids = [...this.selected];
       this.notify(`🚀 Master scrape started for ${ids.length} lead(s) — details → websites → reviews → photos`);
 
@@ -2579,7 +2608,7 @@ function app() {
         const r1 = await fetch('/api/leads/scrape-details-bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids, workers: this.form.workers }),
+          body: JSON.stringify({ ids, workers: this.form.workers, force: this.form.forceRescrape }),
         });
         const d1 = await r1.json().catch(() => ({ results: [] }));
         const ok1 = (d1.results ?? []).filter(r => r.success).length;
@@ -2590,6 +2619,7 @@ function app() {
         this.detailScraping = false;
         this.notify('❌ Step 1/4 failed (details)');
       }
+      if (this.secondaryStopping) { this.masterScraping = false; this.secondaryStopping = false; this.notify('🛑 Stopped after step 1'); return; }
 
       // Step 2: Scrape websites
       try {
@@ -2597,7 +2627,7 @@ function app() {
         const r2 = await fetch('/api/leads/scrape-websites-bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids, workers: this.form.workers }),
+          body: JSON.stringify({ ids, workers: this.form.workers, force: this.form.forceRescrape }),
         });
         const d2 = await r2.json().catch(() => ({ results: [] }));
         const ok2 = (d2.results ?? []).filter(r => r.success).length;
@@ -2608,6 +2638,7 @@ function app() {
         this.websiteScraping = false;
         this.notify('❌ Step 2/4 failed (websites)');
       }
+      if (this.secondaryStopping) { this.masterScraping = false; this.secondaryStopping = false; this.notify('🛑 Stopped after step 2'); return; }
 
       // Step 3: Scrape reviews
       try {
@@ -2615,7 +2646,7 @@ function app() {
         const r3 = await fetch('/api/leads/scrape-reviews-bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids, max: 50, force: true, reviewWorkers: this.form.reviewWorkers }),
+          body: JSON.stringify({ ids, max: 50, force: this.form.forceRescrape, reviewWorkers: this.form.reviewWorkers }),
         });
         const d3 = await r3.json().catch(() => ({ results: [] }));
         const loaded = (d3.results ?? []).reduce((sum, r) => sum + (r.count ?? 0), 0);
@@ -2626,6 +2657,7 @@ function app() {
         this.reviewScraping = false;
         this.notify('❌ Step 3/4 failed (reviews)');
       }
+      if (this.secondaryStopping) { this.masterScraping = false; this.secondaryStopping = false; this.notify('🛑 Stopped after step 3'); return; }
 
       // Step 4: Scrape photos
       try {
@@ -2633,7 +2665,7 @@ function app() {
         const r4 = await fetch('/api/leads/scrape-photos-bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids, max: 20, workers: this.form.workers }),
+          body: JSON.stringify({ ids, max: 20, workers: this.form.workers, force: this.form.forceRescrape }),
         });
         const d4 = await r4.json().catch(() => ({ results: [] }));
         const photos = (d4.results ?? []).reduce((sum, r) => sum + (r.count ?? 0), 0);
@@ -2646,6 +2678,7 @@ function app() {
       }
 
       this.masterScraping = false;
+      this.secondaryStopping = false;
       await this.loadLeads();
       this.notify(`🎉 Master scrape complete for ${ids.length} lead(s)`);
     },

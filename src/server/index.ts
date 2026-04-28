@@ -68,6 +68,7 @@ let shouldStop = false;
 let pauseRequested = false;
 let stopping = false;
 let activeScrapeController: AbortController | null = null;
+let secondaryShouldStop = false;
 
 function emptySessionStats(): SessionStats {
   return { runId: '', total: 0, jobs: 0, found: 0, saved: 0, duplicates: 0, skipped: 0, failed: 0 };
@@ -342,6 +343,7 @@ app.post('/api/scrape/pause', (_req, res) => {
 
 app.post('/api/scrape/stop', (_req, res) => {
   closeAllBrowsers(); // kill active Playwright browsers immediately
+  secondaryShouldStop = true; // also stop any running secondary scrapers
   if (!scraping) {
     // Nothing running — reset any stale state and tell the client immediately
     scraping = false;
@@ -356,6 +358,14 @@ app.post('/api/scrape/stop', (_req, res) => {
   stopping = true;
   activeScrapeController?.abort();
   broadcast({ type: 'stopping', message: 'Stopping current scrape...' });
+  res.json({ stopping: true });
+});
+
+app.post('/api/scrape/stop-secondary', (_req, res) => {
+  secondaryShouldStop = true;
+  (['detail', 'website', 'reviews', 'photos'] as const).forEach(src =>
+    broadcast({ type: 'log', message: '🛑 Stop requested — finishing current item then stopping...' }, src)
+  );
   res.json({ stopping: true });
 });
 
@@ -629,18 +639,19 @@ app.post('/api/leads/:id/scrape-details', async (req, res) => {
 
 // ── Bulk scrape details ───────────────────────────────────────────────────────
 app.post('/api/leads/scrape-details-bulk', async (req, res) => {
-  const { ids, workers = 3 } = req.body as { ids: number[]; workers?: number };
+  const { ids, workers = 3, force = false } = req.body as { ids: number[]; workers?: number; force?: boolean };
   if (!Array.isArray(ids) || !ids.length) {
     res.status(400).json({ error: 'ids array required' });
     return;
   }
   const concurrency = Math.min(Math.max(Number(workers) || 3, 1), 10);
-  broadcast({ type: 'start', message: `📋 Detail scrape starting — ${ids.length} lead(s) · ${concurrency} workers` }, 'detail');
+  secondaryShouldStop = false;
+  broadcast({ type: 'start', message: `📋 Detail scrape starting — ${ids.length} lead(s) · ${concurrency} workers${force ? ' · force' : ''}` }, 'detail');
   const results: { id: number; name?: string; success: boolean; error?: string }[] = [];
   let done = 0;
   const queue = [...ids];
   await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, async () => {
-    while (true) {
+    while (!secondaryShouldStop) {
       const rawId = queue.shift();
       if (rawId === undefined) break;
       const id = Number(rawId);
@@ -648,6 +659,11 @@ app.post('/api/leads/scrape-details-bulk', async (req, res) => {
       if (!lead?.maps_url) {
         broadcast({ type: 'log', message: `⏭ #${id} — no Maps URL, skipping` }, 'detail');
         results.push({ id, success: false, error: 'No Maps URL' });
+        continue;
+      }
+      if (!force && lead.details_scraped) {
+        broadcast({ type: 'log', message: `⏭ ${lead.name} — details already scraped, skipping` }, 'detail');
+        results.push({ id, name: lead.name, success: true });
         continue;
       }
       broadcast({ type: 'log', message: `🔍 [${++done}/${ids.length}] ${lead.name}` }, 'detail');
@@ -706,12 +722,13 @@ app.post('/api/leads/scrape-reviews-bulk', async (req, res) => {
     return;
   }
   const concurrency = Math.min(Math.max(Number(reviewWorkers) || 3, 1), 10);
+  secondaryShouldStop = false;
   broadcast({ type: 'start', message: `⭐ Review scrape starting — ${ids.length} lead(s) · ${concurrency} workers` }, 'reviews');
   const results: { id: number; name?: string; count: number; error?: string }[] = [];
   let rdone = 0;
   const queue = [...ids];
   await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, async () => {
-    while (true) {
+    while (!secondaryShouldStop) {
       const rawId = queue.shift();
       if (rawId === undefined) break;
       const id = Number(rawId);
@@ -790,16 +807,17 @@ app.get('/api/leads/export.csv', async (_req, res) => {
 
 // ── Website scraper ───────────────────────────────────────────────────────────
 app.post('/api/leads/scrape-websites-bulk', async (req, res) => {
-  const { ids, workers = 3 } = req.body as { ids: number[]; workers?: number };
+  const { ids, workers = 3, force = false } = req.body as { ids: number[]; workers?: number; force?: boolean };
   if (!Array.isArray(ids) || !ids.length) { res.status(400).json({ error: 'ids required' }); return; }
   const concurrency = Math.min(Math.max(Number(workers) || 3, 1), 10);
-  broadcast({ type: 'start', message: `🌐 Website scrape starting — ${ids.length} lead(s) · ${concurrency} workers` }, 'website');
+  secondaryShouldStop = false;
+  broadcast({ type: 'start', message: `🌐 Website scrape starting — ${ids.length} lead(s) · ${concurrency} workers${force ? ' · force' : ''}` }, 'website');
 
   const results: { id: number; name?: string; success: boolean; error?: string }[] = [];
   let done = 0;
   const queue = [...ids];
   await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, async () => {
-    while (true) {
+    while (!secondaryShouldStop) {
       const rawId = queue.shift();
       if (rawId === undefined) break;
       const id = Number(rawId);
@@ -809,6 +827,11 @@ app.post('/api/leads/scrape-websites-bulk', async (req, res) => {
       if (!lead.website_url) {
         broadcast({ type: 'log', message: `⏭ #${id} ${lead.name} — no website URL, skipping` }, 'website');
         await saveWebsiteData(id, { emails: [], phones: [], socialLinks: [], contactUrl: '', hasContactForm: false, status: 'no_website' });
+        results.push({ id, name: lead.name, success: true });
+        continue;
+      }
+      if (!force && lead.website_scrape_status === 'done') {
+        broadcast({ type: 'log', message: `⏭ ${lead.name} — website already crawled, skipping` }, 'website');
         results.push({ id, name: lead.name, success: true });
         continue;
       }
@@ -843,15 +866,16 @@ app.post('/api/leads/scrape-websites-bulk', async (req, res) => {
 
 // ── Photo scraper ─────────────────────────────────────────────────────────────
 app.post('/api/leads/scrape-photos-bulk', async (req, res) => {
-  const { ids, max = 20, workers = 3 } = req.body as { ids: number[]; max?: number; workers?: number };
+  const { ids, max = 20, workers = 3, force = false } = req.body as { ids: number[]; max?: number; workers?: number; force?: boolean };
   if (!Array.isArray(ids) || !ids.length) { res.status(400).json({ error: 'ids required' }); return; }
   const concurrency = Math.min(Math.max(Number(workers) || 3, 1), 10);
-  broadcast({ type: 'start', message: `📷 Photo scrape starting — ${ids.length} lead(s) · ${concurrency} workers` }, 'photos');
+  secondaryShouldStop = false;
+  broadcast({ type: 'start', message: `📷 Photo scrape starting — ${ids.length} lead(s) · ${concurrency} workers${force ? ' · force' : ''}` }, 'photos');
   const results: { id: number; name?: string; count: number; error?: string }[] = [];
   let done = 0;
   const queue = [...ids];
   await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, async () => {
-    while (true) {
+    while (!secondaryShouldStop) {
       const rawId = queue.shift();
       if (rawId === undefined) break;
       const id = Number(rawId);
@@ -859,6 +883,11 @@ app.post('/api/leads/scrape-photos-bulk', async (req, res) => {
       if (!lead?.maps_url) {
         broadcast({ type: 'log', message: `#${id} missing Maps URL - skipping` }, 'photos');
         results.push({ id, count: 0, error: 'No Maps URL' });
+        continue;
+      }
+      if (!force && lead.photos_scraped_at) {
+        broadcast({ type: 'log', message: `⏭ ${lead.name} — photos already scraped, skipping` }, 'photos');
+        results.push({ id, name: lead.name, count: 0 });
         continue;
       }
       broadcast({ type: 'log', message: `📷 [${++done}/${ids.length}] ${lead.name}` }, 'photos');
