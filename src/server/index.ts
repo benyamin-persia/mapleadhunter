@@ -3,11 +3,13 @@ import os from 'os';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getAllLeads, insertLeads, deleteLeads, deleteAllLeads, getLeadById, getLeadByMapsUrl, saveReviews, getReviews, saveDetails, markReviewScrape, enqueueSmsBatch, getSmsQueue, markSmsQueueItem, clearSmsQueue, saveWebsiteData, logOutreach, markZipScraped, getScrapedZipSet, savePhotos, getOutreachLog, claimZip, releaseZip, releaseStaleZipClaims, logActivity, getRecentActivity } from '../leads/repository.js';
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'fs';
+import { getAllLeads, getLeadList, getLeadCount, insertLeads, deleteLeads, deleteAllLeads, getLeadById, getLeadByMapsUrl, saveReviews, getReviews, saveDetails, markReviewScrape, enqueueSmsBatch, getSmsQueue, markSmsQueueItem, clearSmsQueue, saveWebsiteData, logOutreach, markZipScraped, getScrapedZipSet, getCategoryZipStatuses, savePhotos, getOutreachLog, claimZip, releaseZip, releaseStaleZipClaims, logActivity, getRecentActivity, getActivityHistory, createScrapeRun, updateScrapeRun, markScrapeRunItem, getLatestResumableScrapeRun, getScrapeRun, getPendingScrapeRunItems } from '../leads/repository.js';
+import type { ScrapeRun } from '../leads/repository.js';
 import { scrapeMapPhotos } from '../scraper/photo-scraper.js';
 import { scrapeWebsite } from '../scraper/website-scraper.js';
 import { submitContactForm } from '../scraper/form-submitter.js';
-import { initDb, wipeAllData } from '../leads/db.js';
+import { getDb, initDb, resetScrapeProcessData, wipeAllData } from '../leads/db.js';
 import { backupToSheets } from '../backup/sheets.js';
 import { scrapeZip } from '../scraper/map-scraper.js';
 import { sendSms } from '../outreach/sms.js';
@@ -25,12 +27,23 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ── SSE broadcast ────────────────────────────────────────────────────────────
 const sseClients = new Set<express.Response>();
 
-type LogSource = 'main' | 'detail' | 'website' | 'reviews';
+type LogSource = 'main' | 'detail' | 'website' | 'reviews' | 'photos' | 'sms' | 'forms';
+type MapScrapeJob = { zip: string; category: string };
+type SessionStats = {
+  runId: string;
+  total: number;
+  jobs: number;
+  found: number;
+  saved: number;
+  duplicates: number;
+  skipped: number;
+  failed: number;
+};
 
 const HOST = os.hostname();
 
 function broadcast(data: object, source: LogSource = 'main'): void {
-  const msg = `data: ${JSON.stringify({ ...data, source })}\n\n`;
+  const msg = `data: ${JSON.stringify({ ...data, source, host: HOST })}\n\n`;
   sseClients.forEach((res) => res.write(msg));
   // Persist to Turso so other computers can see this activity
   const d = data as Record<string, unknown>;
@@ -52,13 +65,189 @@ app.get('/api/scrape/events', (req, res) => {
 // ── Scrape control ───────────────────────────────────────────────────────────
 let scraping = false;
 let shouldStop = false;
+let pauseRequested = false;
 let stopping = false;
 let activeScrapeController: AbortController | null = null;
-let sessionStats = { jobs: 0, found: 0, saved: 0, duplicates: 0 };
 
-app.get('/api/scrape/status', (_req, res) => {
+function emptySessionStats(): SessionStats {
+  return { runId: '', total: 0, jobs: 0, found: 0, saved: 0, duplicates: 0, skipped: 0, failed: 0 };
+}
+
+let sessionStats: SessionStats = emptySessionStats();
+
+function resetScrapeState(): void {
+  shouldStop = false;
+  pauseRequested = false;
+  stopping = false;
+  activeScrapeController = null;
+  sessionStats = emptySessionStats();
+}
+
+function n(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sessionFromRun(run: ScrapeRun): SessionStats {
+  return {
+    runId: run.id,
+    total: n(run.total_items),
+    jobs: n(run.completed_items),
+    found: n(run.found),
+    saved: n(run.saved),
+    duplicates: n(run.duplicates),
+    skipped: n(run.skipped_items),
+    failed: n(run.failed_items),
+  };
+}
+
+app.get('/api/scrape/status', async (_req, res) => {
+  if (!scraping && !sessionStats.runId) {
+    const run = await getLatestResumableScrapeRun();
+    if (run) {
+      res.json({ scraping, stopping, session: sessionFromRun(run) });
+      return;
+    }
+  }
   res.json({ scraping, stopping, session: sessionStats });
 });
+
+async function runMapScrapeSession(opts: {
+  runId: string;
+  jobs: MapScrapeJob[];
+  maxPerZip: number;
+  workers: number;
+  detailFirst: boolean;
+}): Promise<void> {
+  const { runId, jobs, maxPerZip, workers, detailFirst } = opts;
+  const scraperType = detailFirst ? 'maps_detail' : 'maps_fast';
+  const savedRun = await getScrapeRun(runId);
+
+  scraping = true;
+  shouldStop = false;
+  pauseRequested = false;
+  stopping = false;
+  sessionStats = savedRun
+    ? sessionFromRun(savedRun)
+    : { runId, total: jobs.length, jobs: 0, found: 0, saved: 0, duplicates: 0, skipped: 0, failed: 0 };
+  activeScrapeController = new AbortController();
+  await updateScrapeRun(runId, { status: 'running', message: `Starting ${jobs.length} remaining job(s)` });
+  broadcast({
+    type: 'start',
+    ...sessionStats,
+    message: `Starting ${jobs.length} remaining job(s) with ${workers} worker(s)`,
+  });
+
+  await releaseStaleZipClaims();
+  const workerId = `${HOST}:${process.pid}`;
+
+  let nextJob = 0;
+  const runWorker = async (workerNum: number) => {
+    while (!shouldStop) {
+      const job = jobs[nextJob++];
+      if (!job) break;
+      const { zip, category } = job;
+
+      const claimed = await claimZip(zip, category, workerId, scraperType);
+      if (!claimed) {
+        sessionStats.skipped++;
+        await markScrapeRunItem(runId, zip, category, 'skipped', { reason: 'claimed' });
+        await updateScrapeRun(runId, { skippedDelta: 1, message: `${zip}/${category} already claimed` });
+        broadcast({ type: 'log', message: `Worker ${workerNum}: ${zip}/${category} already claimed by another computer - skipping` });
+        broadcast({ type: 'job-skipped', runId, zip, category, message: `${zip} / ${category}: skipped because another computer claimed it` });
+        continue;
+      }
+
+      await markScrapeRunItem(runId, zip, category, 'running');
+      await updateScrapeRun(runId, { cursor: { zip, category, worker: workerNum }, message: `Scraping ${category} near ${zip}` });
+      broadcast({ type: 'log', message: `Worker ${workerNum}: scraping "${category}" near ${zip}...` });
+
+      const signal = activeScrapeController?.signal;
+      if (!signal || signal.aborted) { await releaseZip(zip, category); break; }
+
+      try {
+        const { leads, detailsMap } = await scrapeZip(zip, category, maxPerZip, (event) => broadcast(event), signal, stateForZip(zip), detailFirst);
+        if (shouldStop && !pauseRequested) {
+          await markScrapeRunItem(runId, zip, category, 'pending', {}, 'Stopped by user');
+          await releaseZip(zip, category);
+          break;
+        }
+
+        const saved = leads.length > 0 ? await insertLeads(leads) : 0;
+        const duplicates = leads.length - saved;
+        await markZipScraped(zip, category, leads.length, scraperType);
+        sessionStats.jobs++;
+        sessionStats.found += leads.length;
+        sessionStats.saved += saved;
+        sessionStats.duplicates += duplicates;
+        await updateScrapeRun(runId, {
+          completedDelta: 1,
+          foundDelta: leads.length,
+          savedDelta: saved,
+          duplicatesDelta: duplicates,
+          cursor: { zip, category, worker: workerNum },
+          message: `${zip}/${category}: ${saved} saved, ${duplicates} duplicate(s)`,
+        });
+        await markScrapeRunItem(runId, zip, category, 'done', { found: leads.length, saved, duplicates });
+
+        if (detailFirst && detailsMap.size > 0) {
+          for (const lead of leads) {
+            const d = detailsMap.get(lead.maps_url);
+            if (!d) continue;
+            const dbLead = await getLeadByMapsUrl(lead.maps_url);
+            if (dbLead) await saveDetails(dbLead.id, d);
+          }
+          broadcast({ type: 'log', message: `${zip} / ${category}: full details saved for ${detailsMap.size} business(es)` });
+        }
+        broadcast({
+          type: 'job-done',
+          message: leads.length > 0
+            ? `${zip} / ${category}: ${saved} saved, ${duplicates} duplicate(s)`
+            : `${zip} / ${category}: no results`,
+          found: leads.length,
+          saved,
+          duplicates,
+        });
+
+        await releaseZip(zip, category);
+
+        if (!shouldStop && jobs[nextJob]) {
+          const pause = 8000 + Math.floor(Math.random() * 7000);
+          broadcast({ type: 'log', message: `Worker ${workerNum}: waiting ${Math.round(pause / 1000)}s before next job...` });
+          await new Promise((r) => setTimeout(r, pause));
+        }
+      } catch (err) {
+        const msg = String(err);
+        await releaseZip(zip, category).catch(() => null);
+        if (shouldStop) {
+          await markScrapeRunItem(runId, zip, category, 'pending', {}, msg);
+          broadcast({ type: 'log', message: pauseRequested ? 'Pausing after current work...' : 'Stopped by user. Current job remains pending for resume.' });
+          break;
+        }
+        await markScrapeRunItem(runId, zip, category, 'failed', {}, msg);
+        await updateScrapeRun(runId, { failedDelta: 1, message: `${zip}/${category} failed: ${msg}` });
+        sessionStats.failed++;
+        broadcast({ type: 'error', message: `Worker ${workerNum} error on ${zip} / ${category}: ${msg} - continuing...` });
+      }
+    }
+  };
+
+  try {
+    await Promise.all(Array.from({ length: Math.min(workers, jobs.length) }, (_, i) => runWorker(i + 1)));
+  } finally {
+    const status = pauseRequested ? 'paused' : shouldStop ? 'stopped' : sessionStats.failed > 0 ? 'failed' : 'done';
+    const message = status === 'paused' ? 'Paused. You can resume this run later.' :
+                    status === 'stopped' ? 'Stopped. You can resume this run later.' :
+                    status === 'failed' ? `Finished with ${sessionStats.failed} failed job(s). You can resume to retry them.` :
+                    'All jobs complete.';
+    await updateScrapeRun(runId, { status, message });
+    scraping = false;
+    stopping = false;
+    activeScrapeController = null;
+    broadcast({ type: status === 'paused' ? 'paused' : status === 'stopped' ? 'stopped' : 'done', ...sessionStats, message });
+    pauseRequested = false;
+  }
+}
 
 app.post('/api/scrape/start', async (req, res) => {
   if (scraping) {
@@ -77,109 +266,78 @@ app.post('/api/scrape/start', async (req, res) => {
     return;
   }
 
-  let jobs: { zip: string; category: string }[] = [];
+  let jobs: MapScrapeJob[] = [];
   for (const zip of zips) for (const category of categories) jobs.push({ zip, category });
+  const scraperType = detailFirst ? 'maps_detail' : 'maps_fast';
 
   if (skipScraped) {
-    const done = await getScrapedZipSet();
+    const done = await getScrapedZipSet(scraperType);
     const before = jobs.length;
     jobs = jobs.filter((j) => !done.has(`${j.zip}::${j.category.toLowerCase()}`));
     const skipped = before - jobs.length;
     if (skipped > 0 && jobs.length === 0) {
+      broadcast({ type: 'log', message: `All selected zip/category jobs were already scraped with ${scraperType}` });
       res.json({ started: false, skipped, jobs: 0, message: 'All selected zips already scraped.' });
       return;
     }
   }
 
-  res.json({ started: true, jobs: jobs.length });
+  const runId = await createScrapeRun({
+    host: HOST,
+    scraperType,
+    request: { zips, categories, maxPerZip: cappedMaxPerZip, workers: cappedWorkers, skipScraped, detailFirst },
+    items: jobs.map((job) => ({ ...job, scraperType })),
+  });
+  const session: SessionStats = { runId, total: jobs.length, jobs: 0, found: 0, saved: 0, duplicates: 0, skipped: 0, failed: 0 };
 
-  void (async () => {
-    scraping = true;
-    shouldStop = false;
-    stopping = false;
-    sessionStats = { jobs: 0, found: 0, saved: 0, duplicates: 0 };
-    activeScrapeController = new AbortController();
-    broadcast({ type: 'start', message: `Starting ${jobs.length} job(s) with ${cappedWorkers} worker(s)` });
+  res.json({ started: true, jobs: jobs.length, runId, session });
+  void runMapScrapeSession({ runId, jobs, maxPerZip: cappedMaxPerZip, workers: cappedWorkers, detailFirst });
+});
 
-    // Release stale claims from crashed sessions
-    await releaseStaleZipClaims();
-    const workerId = `${os.hostname()}-${process.pid}`;
+app.get('/api/scrape/resumable', async (_req, res) => {
+  const run = await getLatestResumableScrapeRun();
+  if (!run) { res.json({ run: null, pending: 0 }); return; }
+  const pending = await getPendingScrapeRunItems(run.id);
+  res.json({ run, pending: pending.length, session: sessionFromRun(run) });
+});
 
-    let nextJob = 0;
-    const runWorker = async (workerNum: number) => {
-      while (!shouldStop) {
-        const job = jobs[nextJob++];
-        if (!job) break;
-        const { zip, category } = job;
+app.post('/api/scrape/resume', async (_req, res) => {
+  if (scraping) {
+    res.status(409).json({ error: 'Scrape already running' });
+    return;
+  }
+  const run = await getLatestResumableScrapeRun();
+  if (!run) {
+    broadcast({ type: 'log', message: 'Resume requested, but no paused or resumable scrape was found' });
+    res.status(404).json({ error: 'No paused or resumable scrape found' });
+    return;
+  }
+  const pending = await getPendingScrapeRunItems(run.id);
+  const jobs = pending.map((item) => ({ zip: item.zip, category: item.category }));
+  if (!jobs.length) {
+    await updateScrapeRun(run.id, { status: 'done', message: 'No pending items left to resume' });
+    broadcast({ type: 'log', runId: run.id, message: 'Resume requested, but no pending items were left' });
+    res.json({ resumed: false, message: 'No pending items left to resume' });
+    return;
+  }
+  const request = JSON.parse(run.request_json || '{}') as { maxPerZip?: number; workers?: number; detailFirst?: boolean };
+  const maxPerZip = Math.min(Math.max(Number(request.maxPerZip) || 500, 1), 500);
+  const workers = Math.min(Math.max(Number(request.workers) || 1, 1), 10);
+  const detailFirst = run.scraper_type === 'maps_detail' || request.detailFirst === true;
+  res.json({ resumed: true, runId: run.id, jobs: jobs.length, session: sessionFromRun(run) });
+  void runMapScrapeSession({ runId: run.id, jobs, maxPerZip, workers, detailFirst });
+});
 
-        // Atomically claim this zip — if another computer already claimed it, skip
-        const claimed = await claimZip(zip, category, workerId);
-        if (!claimed) {
-          broadcast({ type: 'log', message: `Worker ${workerNum}: ⏭ ${zip}/${category} already claimed by another computer — skipping` });
-          continue;
-        }
-
-        broadcast({ type: 'log', message: `Worker ${workerNum}: scraping "${category}" near ${zip}...` });
-
-        const signal = activeScrapeController?.signal;
-        if (!signal || signal.aborted) { await releaseZip(zip, category); break; }
-
-        try {
-          const { leads, detailsMap } = await scrapeZip(zip, category, cappedMaxPerZip, (event) => broadcast(event), signal, stateForZip(zip), detailFirst);
-          if (shouldStop) { broadcast({ type: 'log', message: 'Stopped by user' }); break; }
-
-          const saved = leads.length > 0 ? await insertLeads(leads) : 0;
-          const duplicates = leads.length - saved;
-          await markZipScraped(zip, category, leads.length);
-          sessionStats.jobs++;
-          sessionStats.found += leads.length;
-          sessionStats.saved += saved;
-          sessionStats.duplicates += duplicates;
-
-          if (detailFirst && detailsMap.size > 0) {
-            for (const lead of leads) {
-              const d = detailsMap.get(lead.maps_url);
-              if (!d) continue;
-              const dbLead = await getLeadByMapsUrl(lead.maps_url);
-              if (dbLead) await saveDetails(dbLead.id, d);
-            }
-            broadcast({ type: 'log', message: `${zip} / ${category}: full details saved for ${detailsMap.size} business(es)` });
-          }
-          broadcast({
-            type: 'job-done',
-            message: leads.length > 0
-              ? `${zip} / ${category}: ${saved} saved, ${duplicates} duplicate(s)`
-              : `${zip} / ${category}: no results`,
-            found: leads.length,
-            saved,
-            duplicates,
-          });
-
-          await releaseZip(zip, category);
-
-          // Pause between jobs so Google doesn't rate-limit and strip website chips
-          if (!shouldStop && jobs[nextJob]) {
-            const pause = 8000 + Math.floor(Math.random() * 7000); // 8–15s
-            broadcast({ type: 'log', message: `Worker ${workerNum}: waiting ${Math.round(pause/1000)}s before next job...` });
-            await new Promise((r) => setTimeout(r, pause));
-          }
-        } catch (err) {
-          await releaseZip(zip, category).catch(() => null);
-          if (shouldStop) { broadcast({ type: 'log', message: 'Stopped by user' }); break; }
-          broadcast({ type: 'error', message: `Worker ${workerNum} error on ${zip} / ${category}: ${String(err)} — continuing...` });
-        }
-      }
-    };
-
-    try {
-      await Promise.all(Array.from({ length: Math.min(cappedWorkers, jobs.length) }, (_, i) => runWorker(i + 1)));
-    } finally {
-      scraping = false;
-      stopping = false;
-      activeScrapeController = null;
-      broadcast({ type: 'done', message: '✅ All jobs complete.' });
-    }
-  })();
+app.post('/api/scrape/pause', (_req, res) => {
+  if (!scraping) {
+    res.json({ paused: false, scraping: false });
+    return;
+  }
+  pauseRequested = true;
+  shouldStop = true;
+  stopping = true;
+  broadcast({ type: 'pausing', message: 'Pausing after the current zip/category finishes...' });
+  res.json({ paused: true });
 });
 
 app.post('/api/scrape/stop', (_req, res) => {
@@ -188,10 +346,12 @@ app.post('/api/scrape/stop', (_req, res) => {
     // Nothing running — reset any stale state and tell the client immediately
     scraping = false;
     stopping = false;
-    broadcast({ type: 'done', message: '✅ Stopped.' });
+    pauseRequested = false;
+    broadcast({ type: 'done', message: 'Stopped.' });
     res.json({ stopping: false, scraping: false });
     return;
   }
+  pauseRequested = false;
   shouldStop = true;
   stopping = true;
   activeScrapeController?.abort();
@@ -199,24 +359,54 @@ app.post('/api/scrape/stop', (_req, res) => {
   res.json({ stopping: true });
 });
 
+app.post('/api/scrape/reset', async (_req, res) => {
+  if (scraping) {
+    res.status(409).json({ error: 'Stop or pause the scraper before resetting progress' });
+    return;
+  }
+  await resetScrapeProcessData();
+  resetScrapeState();
+  broadcast({ type: 'reset', ...sessionStats, message: 'Scrape process reset. Ready to start from first.' });
+  res.json({ ok: true, session: sessionStats });
+});
+
 // ── Leads ────────────────────────────────────────────────────────────────────
 app.get('/api/leads', async (_req, res) => {
-  res.json(await getAllLeads());
+  res.json(await getLeadList());
+});
+
+app.get('/api/leads/count', async (_req, res) => {
+  res.json({ total: await getLeadCount() });
+});
+
+app.get('/api/leads/:id', async (req, res) => {
+  const id = Number(req.params['id']);
+  const lead = await getLeadById(id);
+  if (!lead) { res.status(404).json({ error: 'Lead not found' }); return; }
+  res.json(lead);
 });
 
 app.delete('/api/leads/:id', async (req, res) => {
   const id = Number(req.params['id']);
   await deleteLeads([id]);
+  broadcast({ type: 'log', message: `Deleted lead #${id}` });
   res.json({ deleted: id });
 });
 
 app.post('/api/leads/delete-all', async (_req, res) => {
   await deleteAllLeads();
+  broadcast({ type: 'log', message: 'Deleted all leads' });
   res.json({ deleted: true });
 });
 
 app.post('/api/db/wipe', async (_req, res) => {
+  if (scraping) {
+    res.status(409).json({ error: 'Stop or pause the scraper before wiping the database' });
+    return;
+  }
   await wipeAllData();
+  resetScrapeState();
+  broadcast({ type: 'log', message: 'Database wiped' });
   res.json({ ok: true });
 });
 
@@ -227,6 +417,7 @@ app.post('/api/leads/delete-bulk', async (req, res) => {
     return;
   }
   await deleteLeads(ids.map(Number));
+  broadcast({ type: 'log', message: `Deleted ${ids.length} lead(s)` });
   res.json({ deleted: ids.length });
 });
 
@@ -281,6 +472,10 @@ app.post('/api/sms/send', async (req, res) => {
   };
 
   const rawBody = templates?.[template]?.body ?? '';
+  if (!rawBody.trim()) {
+    res.status(400).json({ error: 'Selected SMS template is empty or missing' });
+    return;
+  }
   const items: { leadId: number; template: string; message: string }[] = [];
 
   for (const leadId of leadIds) {
@@ -294,6 +489,7 @@ app.post('/api/sms/send', async (req, res) => {
   }
 
   const count = await enqueueSmsBatch(items);
+  broadcast({ type: 'log', message: `Queued ${count} SMS message(s) using template "${template}"` }, 'sms');
   res.json({ queued: count });
 });
 
@@ -335,21 +531,25 @@ app.post('/api/sms/queue/send', async (req, res) => {
 
   const pending = await getSmsQueue('pending');
   const results: { id: number; leadId: number; success: boolean; error?: string }[] = [];
+  broadcast({ type: 'start', message: `SMS queue send starting - ${pending.length} pending message(s)` }, 'sms');
 
   for (const item of pending) {
     try {
       await sendSms(item.lead_id, item.template, item.message || undefined);
       await markSmsQueueItem(item.id, 'sent');
+      broadcast({ type: 'log', message: `Sent SMS queue item #${item.id} to lead #${item.lead_id}` }, 'sms');
       results.push({ id: item.id, leadId: item.lead_id, success: true });
       await new Promise((r) => setTimeout(r, 1500));
     } catch (err) {
       const msg = String(err);
       await markSmsQueueItem(item.id, 'failed', msg);
+      broadcast({ type: 'error', message: `SMS queue item #${item.id} failed: ${msg}` }, 'sms');
       results.push({ id: item.id, leadId: item.lead_id, success: false, error: msg });
       if (msg.includes('not connected') || msg.includes('no devices')) break;
     }
   }
 
+  broadcast({ type: 'done', message: `SMS queue done - ${results.filter((r) => r.success).length} sent, ${results.filter((r) => !r.success).length} failed` }, 'sms');
   res.json({ results, sent: results.filter((r) => r.success).length, failed: results.filter((r) => !r.success).length });
 });
 
@@ -357,6 +557,7 @@ app.post('/api/sms/queue/send', async (req, res) => {
 app.post('/api/sms/queue/clear', async (req, res) => {
   const { status } = req.body as { status?: 'sent' | 'failed' };
   await clearSmsQueue(status);
+  broadcast({ type: 'log', message: status ? `Cleared ${status} SMS queue items` : 'Cleared SMS queue' }, 'sms');
   res.json({ ok: true });
 });
 
@@ -402,6 +603,7 @@ app.post('/api/sms/test', async (req, res) => {
     await exec(ADB, ['shell', 'input', 'tap', String(cx), String(cy)]);
 
     res.json({ ok: true, to: e164, preview: body });
+    broadcast({ type: 'log', message: `Test SMS sent to ${e164}` }, 'sms');
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -413,45 +615,58 @@ app.post('/api/leads/:id/scrape-details', async (req, res) => {
   const lead = await getLeadById(id);
   if (!lead) { res.status(404).json({ error: 'Lead not found' }); return; }
   if (!lead.maps_url) { res.status(400).json({ error: 'No Maps URL' }); return; }
-  const details = await scrapeDetails(lead.maps_url);
-  await saveDetails(id, details);
-  res.json(details);
+  broadcast({ type: 'start', message: `Detail scrape starting for ${lead.name}` }, 'detail');
+  try {
+    const details = await scrapeDetails(lead.maps_url);
+    await saveDetails(id, details);
+    broadcast({ type: 'done', message: `Detail scrape done for ${lead.name}` }, 'detail');
+    res.json(details);
+  } catch (err) {
+    broadcast({ type: 'error', message: `Detail scrape failed for ${lead.name}: ${String(err)}` }, 'detail');
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // ── Bulk scrape details ───────────────────────────────────────────────────────
 app.post('/api/leads/scrape-details-bulk', async (req, res) => {
-  const { ids } = req.body as { ids: number[] };
+  const { ids, workers = 3 } = req.body as { ids: number[]; workers?: number };
   if (!Array.isArray(ids) || !ids.length) {
     res.status(400).json({ error: 'ids array required' });
     return;
   }
-  broadcast({ type: 'start', message: `📋 Detail scrape starting — ${ids.length} lead(s)` }, 'detail');
+  const concurrency = Math.min(Math.max(Number(workers) || 3, 1), 10);
+  broadcast({ type: 'start', message: `📋 Detail scrape starting — ${ids.length} lead(s) · ${concurrency} workers` }, 'detail');
   const results: { id: number; name?: string; success: boolean; error?: string }[] = [];
   let done = 0;
-  for (const rawId of ids) {
-    const id = Number(rawId);
-    const lead = await getLeadById(id);
-    if (!lead?.maps_url) {
-      broadcast({ type: 'log', message: `⏭ #${id} — no Maps URL, skipping` }, 'detail');
-      results.push({ id, success: false, error: 'No Maps URL' });
-      continue;
+  const queue = [...ids];
+  await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, async () => {
+    while (true) {
+      const rawId = queue.shift();
+      if (rawId === undefined) break;
+      const id = Number(rawId);
+      const lead = await getLeadById(id);
+      if (!lead?.maps_url) {
+        broadcast({ type: 'log', message: `⏭ #${id} — no Maps URL, skipping` }, 'detail');
+        results.push({ id, success: false, error: 'No Maps URL' });
+        continue;
+      }
+      broadcast({ type: 'log', message: `🔍 [${++done}/${ids.length}] ${lead.name}` }, 'detail');
+      try {
+        const details = await scrapeDetails(lead.maps_url);
+        await saveDetails(id, details);
+        const parts = [];
+        if (details.phone)      parts.push(`☎ ${details.phone}`);
+        if (details.address)    parts.push(`📍 ${details.address}`);
+        if (details.websiteUrl) parts.push(`🌐 ${details.websiteUrl}`);
+        if (Object.keys(details.hours).length) parts.push(`🕐 ${Object.keys(details.hours).length} days hours`);
+        broadcast({ type: 'log', message: `  ✅ ${lead.name}: ${parts.join(' | ') || 'scraped'}` }, 'detail');
+        results.push({ id, name: lead.name, success: true });
+      } catch (err) {
+        broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'detail');
+        results.push({ id, name: lead.name, success: false, error: String(err) });
+      }
     }
-    broadcast({ type: 'log', message: `🔍 [${++done}/${ids.length}] ${lead.name}` }, 'detail');
-    try {
-      const details = await scrapeDetails(lead.maps_url);
-      await saveDetails(id, details);
-      const parts = [];
-      if (details.phone)      parts.push(`☎ ${details.phone}`);
-      if (details.address)    parts.push(`📍 ${details.address}`);
-      if (details.websiteUrl) parts.push(`🌐 ${details.websiteUrl}`);
-      if (Object.keys(details.hours).length) parts.push(`🕐 ${Object.keys(details.hours).length} days hours`);
-      broadcast({ type: 'log', message: `  ✅ ${lead.name}: ${parts.join(' | ') || 'scraped'}` }, 'detail');
-      results.push({ id, name: lead.name, success: true });
-    } catch (err) {
-      broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'detail');
-      results.push({ id, name: lead.name, success: false, error: String(err) });
-    }
-  }
+  }));
   broadcast({ type: 'done', message: `📋 Detail scrape complete — ${results.filter(r => r.success).length}/${ids.length} done` }, 'detail');
   res.json({ results });
 });
@@ -469,50 +684,62 @@ app.post('/api/leads/:id/scrape-reviews', async (req, res) => {
   if (!lead.maps_url) { res.status(400).json({ error: 'No Maps URL for this lead' }); return; }
 
   const maxReviews = Number((req.body as { max?: number }).max ?? 50);
-  const reviews = await scrapeReviews(lead.maps_url, maxReviews);
-  await saveReviews(id, reviews);
-  await markReviewScrape(id, 'done');
-  const savedReviews = await getReviews(id);
-  res.json({ count: savedReviews.length, reviews: savedReviews });
+  broadcast({ type: 'start', message: `Review scrape starting for ${lead.name}` }, 'reviews');
+  try {
+    const reviews = await scrapeReviews(lead.maps_url, maxReviews);
+    await saveReviews(id, reviews);
+    await markReviewScrape(id, 'done');
+    const savedReviews = await getReviews(id);
+    broadcast({ type: 'done', message: `Review scrape done for ${lead.name}: ${savedReviews.length} review(s)` }, 'reviews');
+    res.json({ count: savedReviews.length, reviews: savedReviews });
+  } catch (err) {
+    await markReviewScrape(id, 'error');
+    broadcast({ type: 'error', message: `Review scrape failed for ${lead.name}: ${String(err)}` }, 'reviews');
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 app.post('/api/leads/scrape-reviews-bulk', async (req, res) => {
-  const { ids, max = 50, force = false, reviewWorkers = 1 } = req.body as { ids?: number[]; max?: number; force?: boolean; reviewWorkers?: number };
+  const { ids, max = 50, force = false, reviewWorkers = 3 } = req.body as { ids?: number[]; max?: number; force?: boolean; reviewWorkers?: number };
   if (!Array.isArray(ids) || !ids.length) {
     res.status(400).json({ error: 'ids array required' });
     return;
   }
-  const cappedReviewWorkers = Math.min(Math.max(Number(reviewWorkers) || 1, 1), 1);
-  void cappedReviewWorkers;
-
-  broadcast({ type: 'start', message: `⭐ Review scrape starting — ${ids.length} lead(s)` }, 'reviews');
+  const concurrency = Math.min(Math.max(Number(reviewWorkers) || 3, 1), 10);
+  broadcast({ type: 'start', message: `⭐ Review scrape starting — ${ids.length} lead(s) · ${concurrency} workers` }, 'reviews');
   const results: { id: number; name?: string; count: number; error?: string }[] = [];
   let rdone = 0;
-  for (const rawId of ids) {
-    const id = Number(rawId);
-    const lead = await getLeadById(id);
-    if (!lead?.maps_url) {
-      results.push({ id, count: 0, error: 'Lead not found or missing Maps URL' });
-      continue;
+  const queue = [...ids];
+  await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, async () => {
+    while (true) {
+      const rawId = queue.shift();
+      if (rawId === undefined) break;
+      const id = Number(rawId);
+      const lead = await getLeadById(id);
+      if (!lead?.maps_url) {
+        broadcast({ type: 'log', message: `#${id} missing Maps URL - skipping` }, 'reviews');
+        results.push({ id, count: 0, error: 'Lead not found or missing Maps URL' });
+        continue;
+      }
+      if (!force && lead.review_scrape_status === 'done') {
+        broadcast({ type: 'log', message: `⏭ ${lead.name} — already scraped, skipping` }, 'reviews');
+        results.push({ id, name: lead.name, count: (await getReviews(id)).length });
+        continue;
+      }
+      broadcast({ type: 'log', message: `⭐ [${++rdone}/${ids.length}] ${lead.name}` }, 'reviews');
+      try {
+        const reviews = await scrapeReviews(lead.maps_url, Number(max) || 50);
+        await saveReviews(id, reviews);
+        await markReviewScrape(id, 'done');
+        broadcast({ type: 'log', message: `  ✅ ${lead.name}: ${reviews.length} review(s)` }, 'reviews');
+        results.push({ id, name: lead.name, count: reviews.length });
+      } catch (err) {
+        await markReviewScrape(id, 'error');
+        broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'reviews');
+        results.push({ id, name: lead.name, count: 0, error: String(err) });
+      }
     }
-    if (!force && lead.review_scrape_status === 'done') {
-      broadcast({ type: 'log', message: `⏭ ${lead.name} — already scraped, skipping` }, 'reviews');
-      results.push({ id, name: lead.name, count: (await getReviews(id)).length });
-      continue;
-    }
-    broadcast({ type: 'log', message: `⭐ [${++rdone}/${ids.length}] ${lead.name}` }, 'reviews');
-    try {
-      const reviews = await scrapeReviews(lead.maps_url, Number(max) || 50);
-      await saveReviews(id, reviews);
-      await markReviewScrape(id, 'done');
-      broadcast({ type: 'log', message: `  ✅ ${lead.name}: ${reviews.length} review(s)` }, 'reviews');
-      results.push({ id, name: lead.name, count: reviews.length });
-    } catch (err) {
-      await markReviewScrape(id, 'error');
-      broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'reviews');
-      results.push({ id, name: lead.name, count: 0, error: String(err) });
-    }
-  }
+  }));
   broadcast({ type: 'done', message: `⭐ Review scrape complete — ${results.filter(r => !r.error).length}/${ids.length} done` }, 'reviews');
   res.json({ results });
 });
@@ -526,6 +753,7 @@ app.get('/api/outreach', async (_req, res) => {
 app.get('/api/leads/export.vcf', async (_req, res) => {
   const all = await getAllLeads();
   const leads = all.filter((l) => l.phone);
+  broadcast({ type: 'log', message: `Exported ${leads.length} lead(s) to vCard` });
   const vcf = leads.map((l) => {
     const lines = [
       'BEGIN:VCARD',
@@ -547,6 +775,7 @@ app.get('/api/leads/export.vcf', async (_req, res) => {
 // ── Export CSV ───────────────────────────────────────────────────────────────
 app.get('/api/leads/export.csv', async (_req, res) => {
   const leads = await getAllLeads();
+  broadcast({ type: 'log', message: `Exported ${leads.length} lead(s) to CSV` });
   const headers = ['id', 'name', 'address', 'phone', 'category', 'rating', 'review_count', 'price_level', 'open_now', 'zip', 'has_website', 'website_url', 'maps_url', 'created_at'];
   const rows = leads.map((l) =>
     [l.id, l.name, l.address, l.phone, l.category, l.rating ?? '', l.review_count ?? '', l.price_level, l.open_now, l.zip, l.has_website, l.website_url, l.maps_url, l.created_at]
@@ -561,46 +790,52 @@ app.get('/api/leads/export.csv', async (_req, res) => {
 
 // ── Website scraper ───────────────────────────────────────────────────────────
 app.post('/api/leads/scrape-websites-bulk', async (req, res) => {
-  const { ids } = req.body as { ids: number[] };
+  const { ids, workers = 3 } = req.body as { ids: number[]; workers?: number };
   if (!Array.isArray(ids) || !ids.length) { res.status(400).json({ error: 'ids required' }); return; }
-
-  broadcast({ type: 'start', message: `🌐 Website scrape starting — ${ids.length} lead(s)` }, 'website');
+  const concurrency = Math.min(Math.max(Number(workers) || 3, 1), 10);
+  broadcast({ type: 'start', message: `🌐 Website scrape starting — ${ids.length} lead(s) · ${concurrency} workers` }, 'website');
 
   const results: { id: number; name?: string; success: boolean; error?: string }[] = [];
   let done = 0;
-  for (const id of ids) {
-    const lead = await getLeadById(id);
-    if (!lead) continue;
+  const queue = [...ids];
+  await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, async () => {
+    while (true) {
+      const rawId = queue.shift();
+      if (rawId === undefined) break;
+      const id = Number(rawId);
+      const lead = await getLeadById(id);
+      if (!lead) continue;
 
-    if (!lead.website_url) {
-      broadcast({ type: 'log', message: `⏭ #${id} ${lead.name} — no website URL, skipping` }, 'website');
-      await saveWebsiteData(id, { emails: [], phones: [], socialLinks: [], contactUrl: '', hasContactForm: false, status: 'no_website' });
-      results.push({ id, name: lead.name, success: true });
-      continue;
+      if (!lead.website_url) {
+        broadcast({ type: 'log', message: `⏭ #${id} ${lead.name} — no website URL, skipping` }, 'website');
+        await saveWebsiteData(id, { emails: [], phones: [], socialLinks: [], contactUrl: '', hasContactForm: false, status: 'no_website' });
+        results.push({ id, name: lead.name, success: true });
+        continue;
+      }
+
+      broadcast({ type: 'log', message: `🔍 [${++done}/${ids.length}] Crawling ${lead.website_url} (${lead.name})...` }, 'website');
+
+      try {
+        const data = await scrapeWebsite(lead.website_url);
+        await saveWebsiteData(id, { ...data, status: 'done' });
+
+        const parts: string[] = [];
+        if (data.emails.length)      parts.push(`📧 ${data.emails.length} email(s): ${data.emails.slice(0, 3).join(', ')}`);
+        if (data.phones.length)      parts.push(`📞 ${data.phones.length} phone(s): ${data.phones.slice(0, 2).join(', ')}`);
+        if (data.socialLinks.length) parts.push(`🔗 ${data.socialLinks.map(s => s.platform).join(', ')}`);
+        if (data.hasContactForm)     parts.push(`📋 contact form found`);
+
+        broadcast({ type: 'log', message: parts.length
+          ? `  ✅ ${lead.name}: ${parts.join(' | ')}`
+          : `  ⚠ ${lead.name}: nothing found on site` }, 'website');
+        results.push({ id, name: lead.name, success: true });
+      } catch (err) {
+        await saveWebsiteData(id, { emails: [], phones: [], socialLinks: [], contactUrl: '', hasContactForm: false, status: 'error' });
+        broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'website');
+        results.push({ id, name: lead.name, success: false, error: String(err) });
+      }
     }
-
-    broadcast({ type: 'log', message: `🔍 [${++done}/${ids.length}] Crawling ${lead.website_url} (${lead.name})...` }, 'website');
-
-    try {
-      const data = await scrapeWebsite(lead.website_url);
-      await saveWebsiteData(id, { ...data, status: 'done' });
-
-      const parts: string[] = [];
-      if (data.emails.length)      parts.push(`📧 ${data.emails.length} email(s): ${data.emails.slice(0, 3).join(', ')}`);
-      if (data.phones.length)      parts.push(`📞 ${data.phones.length} phone(s): ${data.phones.slice(0, 2).join(', ')}`);
-      if (data.socialLinks.length) parts.push(`🔗 ${data.socialLinks.map(s => s.platform).join(', ')}`);
-      if (data.hasContactForm)     parts.push(`📋 contact form found`);
-
-      broadcast({ type: 'log', message: parts.length
-        ? `  ✅ ${lead.name}: ${parts.join(' | ')}`
-        : `  ⚠ ${lead.name}: nothing found on site` }, 'website');
-      results.push({ id, name: lead.name, success: true });
-    } catch (err) {
-      await saveWebsiteData(id, { emails: [], phones: [], socialLinks: [], contactUrl: '', hasContactForm: false, status: 'error' });
-      broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'website');
-      results.push({ id, name: lead.name, success: false, error: String(err) });
-    }
-  }
+  }));
 
   broadcast({ type: 'done', message: `🌐 Website scrape complete — ${ids.length} lead(s) processed` }, 'website');
   res.json({ results });
@@ -608,29 +843,38 @@ app.post('/api/leads/scrape-websites-bulk', async (req, res) => {
 
 // ── Photo scraper ─────────────────────────────────────────────────────────────
 app.post('/api/leads/scrape-photos-bulk', async (req, res) => {
-  const { ids, max = 20 } = req.body as { ids: number[]; max?: number };
+  const { ids, max = 20, workers = 3 } = req.body as { ids: number[]; max?: number; workers?: number };
   if (!Array.isArray(ids) || !ids.length) { res.status(400).json({ error: 'ids required' }); return; }
-
-  broadcast({ type: 'start', message: `📷 Photo scrape starting — ${ids.length} lead(s)` }, 'detail');
+  const concurrency = Math.min(Math.max(Number(workers) || 3, 1), 10);
+  broadcast({ type: 'start', message: `📷 Photo scrape starting — ${ids.length} lead(s) · ${concurrency} workers` }, 'photos');
   const results: { id: number; name?: string; count: number; error?: string }[] = [];
   let done = 0;
-
-  for (const id of ids) {
-    const lead = await getLeadById(id);
-    if (!lead?.maps_url) { results.push({ id, count: 0, error: 'No Maps URL' }); continue; }
-    broadcast({ type: 'log', message: `📷 [${++done}/${ids.length}] ${lead.name}` }, 'detail');
-    try {
-      const photos = await scrapeMapPhotos(lead.maps_url, Number(max) || 20);
-      await savePhotos(id, photos);
-      broadcast({ type: 'log', message: `  ✅ ${lead.name}: ${photos.length} photo(s)` }, 'detail');
-      results.push({ id, name: lead.name, count: photos.length });
-    } catch (err) {
-      broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'detail');
-      results.push({ id, name: lead.name, count: 0, error: String(err) });
+  const queue = [...ids];
+  await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, async () => {
+    while (true) {
+      const rawId = queue.shift();
+      if (rawId === undefined) break;
+      const id = Number(rawId);
+      const lead = await getLeadById(id);
+      if (!lead?.maps_url) {
+        broadcast({ type: 'log', message: `#${id} missing Maps URL - skipping` }, 'photos');
+        results.push({ id, count: 0, error: 'No Maps URL' });
+        continue;
+      }
+      broadcast({ type: 'log', message: `📷 [${++done}/${ids.length}] ${lead.name}` }, 'photos');
+      try {
+        const photos = await scrapeMapPhotos(lead.maps_url, Number(max) || 20);
+        await savePhotos(id, photos);
+        broadcast({ type: 'log', message: `  ✅ ${lead.name}: ${photos.length} photo(s)` }, 'photos');
+        results.push({ id, name: lead.name, count: photos.length });
+      } catch (err) {
+        broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'photos');
+        results.push({ id, name: lead.name, count: 0, error: String(err) });
+      }
     }
-  }
+  }));
 
-  broadcast({ type: 'done', message: `📷 Photo scrape complete — ${results.filter(r => !r.error).length}/${ids.length} done` }, 'detail');
+  broadcast({ type: 'done', message: `📷 Photo scrape complete — ${results.filter(r => !r.error).length}/${ids.length} done` }, 'photos');
   res.json({ results });
 });
 
@@ -643,16 +887,21 @@ app.post('/api/leads/submit-forms-bulk', async (req, res) => {
   if (!Array.isArray(ids) || !ids.length) { res.status(400).json({ error: 'ids required' }); return; }
   if (!sender?.name || !sender?.email || !sender?.message) { res.status(400).json({ error: 'sender name, email and message required' }); return; }
 
+  broadcast({ type: 'start', message: `Contact form submit starting - ${ids.length} lead(s)` }, 'forms');
   const results: { id: number; name: string; success: boolean; error?: string }[] = [];
   for (const id of ids) {
     const lead = await getLeadById(id);
     if (!lead?.website_contact_url) {
+      broadcast({ type: 'log', message: `#${id} has no contact form URL - skipping` }, 'forms');
       results.push({ id, name: lead?.name ?? '', success: false, error: 'no contact form URL — run Scrape Websites first' });
       continue;
     }
     const result = await submitContactForm(lead.website_contact_url, { ...sender, message: sender.message.replace('{name}', lead.name) });
     if (result.success) {
       await logOutreach({ leadId: id, zip: lead.zip, phone: lead.phone, channel: 'email', message: sender.message });
+      broadcast({ type: 'log', message: `Submitted contact form for ${lead.name}` }, 'forms');
+    } else {
+      broadcast({ type: 'error', message: `Contact form failed for ${lead.name}: ${result.error ?? 'unknown error'}` }, 'forms');
     }
     results.push({
       id,
@@ -662,11 +911,11 @@ app.post('/api/leads/submit-forms-bulk', async (req, res) => {
     });
     await new Promise((r) => setTimeout(r, 2000));
   }
+  broadcast({ type: 'done', message: `Contact form submit complete - ${results.filter((r) => r.success).length}/${ids.length} successful` }, 'forms');
   res.json({ results });
 });
 
 // ── Geo zip picker ────────────────────────────────────────────────────────────
-import { readFileSync, existsSync } from 'fs';
 
 interface GeoData {
   states: { abbr: string; name: string }[];
@@ -718,6 +967,7 @@ app.post('/api/sms/schedule', (req, res) => {
   const { time, days } = req.body as { time: string | null; days?: number[] };
   scheduleTime = time;
   if (days) scheduleDays = days;
+  broadcast({ type: 'log', message: scheduleTime ? `SMS schedule set for ${scheduleTime}` : 'SMS schedule cleared' }, 'sms');
   res.json({ time: scheduleTime, days: scheduleDays });
 });
 
@@ -731,9 +981,9 @@ setInterval(async () => {
 
   const pending = await getSmsQueue('pending');
   if (!pending.length) return;
-  if (scraping) { broadcast({ type: 'log', message: '⏰ Scheduled SMS skipped — scraper is running' }); return; }
+  if (scraping) { broadcast({ type: 'log', message: '⏰ Scheduled SMS skipped — scraper is running' }, 'sms'); return; }
 
-  broadcast({ type: 'log', message: `⏰ Scheduled SMS send starting — ${pending.length} messages in queue` });
+  broadcast({ type: 'start', message: `⏰ Scheduled SMS send starting — ${pending.length} messages in queue` }, 'sms');
 
   try {
     const { execFile } = await import('child_process');
@@ -745,11 +995,11 @@ setInterval(async () => {
     const { stdout } = await exec(ADB, ['devices']);
     const connected = stdout.trim().split('\n').slice(1).filter((l) => l.includes('\tdevice'));
     if (!connected.length) {
-      broadcast({ type: 'log', message: '⏰ Scheduled SMS skipped — Pixel not connected' });
+      broadcast({ type: 'log', message: '⏰ Scheduled SMS skipped — Pixel not connected' }, 'sms');
       return;
     }
   } catch {
-    broadcast({ type: 'log', message: '⏰ Scheduled SMS skipped — ADB error' });
+    broadcast({ type: 'log', message: '⏰ Scheduled SMS skipped — ADB error' }, 'sms');
     return;
   }
 
@@ -759,15 +1009,17 @@ setInterval(async () => {
       await sendSms(item.lead_id, item.template, item.message || undefined);
       await markSmsQueueItem(item.id, 'sent');
       sent++;
+      broadcast({ type: 'log', message: `Scheduled SMS sent for queue item #${item.id}` }, 'sms');
       await new Promise((r) => setTimeout(r, 1500));
     } catch (err) {
       const msg = String(err);
       await markSmsQueueItem(item.id, 'failed', msg);
       failed++;
+      broadcast({ type: 'error', message: `Scheduled SMS failed for queue item #${item.id}: ${msg}` }, 'sms');
       if (msg.includes('not connected') || msg.includes('no devices')) break;
     }
   }
-  broadcast({ type: 'log', message: `⏰ Scheduled SMS done — ✅ ${sent} sent · ❌ ${failed} failed` });
+  broadcast({ type: 'done', message: `⏰ Scheduled SMS done — ✅ ${sent} sent · ❌ ${failed} failed` }, 'sms');
 }, 60_000);
 
 // Prevent Playwright CDP / browser crash from killing the server
@@ -789,34 +1041,52 @@ process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err);
 });
 
-// Start server immediately, init DB in background so UI is available right away
-app.listen(PORT, () => {
-  console.log(`\n  MapLeadHunter UI → http://localhost:${PORT}\n`);
-  initDb()
-    .then(() => console.log('[db] migrations done'))
-    .catch((err) => console.error('[db] init failed:', err));
-});
+void initDb()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`\n  MapLeadHunter UI → http://localhost:${PORT}\n`);
+    });
+  })
+  .catch((err) => {
+    console.error('[db] init failed:', err);
+    process.exitCode = 1;
+  });
 
 // ── Cross-computer activity feed ─────────────────────────────────────────────
+app.get('/api/meta', (_req, res) => {
+  res.json({ host: HOST });
+});
+
 app.get('/api/activity', async (req, res) => {
   const since = Number((req.query as Record<string, string>)['since'] ?? 0);
   res.json(await getRecentActivity(since));
 });
 
+app.get('/api/activity/recent', async (req, res) => {
+  const query = req.query as Record<string, string | undefined>;
+  const limit = Number(query['limit'] ?? 200);
+  const source = query['source']?.trim() || undefined;
+  res.json(await getActivityHistory(limit, source));
+});
+
 // ── Active scrape claims (what every computer is doing right now) ─────────────
 app.get('/api/scrape/claims', async (_req, res) => {
-  const r = await getDb().execute('SELECT zip, category, claimed_by, claimed_at FROM scrape_claims');
+  const r = await getDb().execute('SELECT zip, category, claimed_by, scraper_type, claimed_at, updated_at FROM scrape_claims');
   res.json(r.rows.map(row => ({
     zip: String(row[0]),
     category: String(row[1]),
     claimed_by: String(row[2]),
-    claimed_at: String(row[3]),
+    scraper_type: String(row[3]),
+    claimed_at: String(row[4]),
+    updated_at: String(row[5]),
   })));
 });
 
+app.get('/api/scrape/category-status', async (_req, res) => {
+  res.json(await getCategoryZipStatuses());
+});
+
 // ── Real-time log viewer ─────────────────────────────────────────────────────
-import { createReadStream, watchFile, statSync, existsSync } from 'fs';
-import os from 'os';
 
 // Serve a self-contained log viewer page
 app.get('/logs', (_req, res) => {
@@ -852,7 +1122,7 @@ function addLine(text) {
   d.className = 'line' + (text.includes(':err]') || text.includes('Error') || text.includes('error') ? ' err' : text.includes('warn') || text.includes('Warn') ? ' warn' : text.includes('✅') || text.includes('done') || text.includes('saved') ? ' ok' : text.startsWith('===') ? ' dim' : '');
   d.textContent = text;
   wrap.appendChild(d);
-  if (++lines > 2000) { wrap.removeChild(wrap.firstChild); lines--; }
+  if (++lines > 200) { wrap.removeChild(wrap.firstChild); lines--; }
   document.getElementById('end').scrollIntoView({ behavior:'auto' });
 }
 
@@ -864,7 +1134,7 @@ es.onerror = function() { st.textContent = '○ reconnecting…'; st.style.color
 });
 
 // SSE stream of log file lines (tail -f style)
-app.get('/logs/stream', (_req, res) => {
+app.get('/logs/stream', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -874,7 +1144,7 @@ app.get('/logs/stream', (_req, res) => {
     // Match where app-main.cjs writes: userData/logs/app.log
     // userData on Windows: %APPDATA%\MapLeadHunter
     const appData = process.env['APPDATA'] || os.homedir();
-    return require('path').join(appData, 'MapLeadHunter', 'logs', 'app.log');
+    return path.join(appData, 'MapLeadHunter', 'logs', 'app.log');
   })();
 
   const send = (line: string) => res.write(`data: ${line.replace(/\r?\n/g, ' ')}\n\n`);
@@ -882,7 +1152,6 @@ app.get('/logs/stream', (_req, res) => {
   // Send last 200 lines immediately (tail)
   if (existsSync(LOG_FILE)) {
     try {
-      const { readFileSync } = require('fs') as typeof import('fs');
       const content = readFileSync(LOG_FILE, 'utf-8');
       const tail = content.split('\n').filter(Boolean).slice(-200);
       tail.forEach(send);
@@ -900,9 +1169,9 @@ app.get('/logs/stream', (_req, res) => {
     const size = statSync(LOG_FILE).size;
     if (size <= lastSize) return;
     const chunk = Buffer.alloc(size - lastSize);
-    const fd = require('fs').openSync(LOG_FILE, 'r');
-    require('fs').readSync(fd, chunk, 0, chunk.length, lastSize);
-    require('fs').closeSync(fd);
+    const fd = openSync(LOG_FILE, 'r');
+    readSync(fd, chunk, 0, chunk.length, lastSize);
+    closeSync(fd);
     lastSize = size;
     buf += chunk.toString('utf-8');
     const lines = buf.split('\n');
@@ -916,10 +1185,13 @@ app.get('/logs/stream', (_req, res) => {
 
 // ── Google Sheets backup ──────────────────────────────────────────────────────
 app.post('/api/backup/sheets', async (_req, res) => {
+  broadcast({ type: 'start', message: 'Google Sheets backup starting' });
   try {
     const result = await backupToSheets();
+    broadcast({ type: 'done', message: `Google Sheets backup done - ${result.rows} row(s)` });
     res.json({ ok: true, ...result });
   } catch (err) {
+    broadcast({ type: 'error', message: `Google Sheets backup failed: ${String(err)}` });
     res.status(500).json({ ok: false, error: String(err) });
   }
 });

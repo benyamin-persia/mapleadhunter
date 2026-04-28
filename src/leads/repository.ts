@@ -1,5 +1,6 @@
 import { getDb } from './db.js';
 import { logger } from '../utils/logger.js';
+import { randomUUID } from 'crypto';
 
 export interface Lead {
   id: number;
@@ -40,6 +41,15 @@ export interface Lead {
   photos_scraped_at: string;
 }
 
+export type LeadListItem = Pick<Lead,
+  'id' | 'created_at' | 'updated_at' | 'zip' | 'phone' | 'name' | 'address' | 'category' |
+  'rating' | 'review_count' | 'price_level' | 'open_now' | 'maps_url' | 'website_url' |
+  'has_website' | 'details_scraped' | 'reviews_scraped_at' | 'review_scrape_status' |
+  'website_emails' | 'website_phones' | 'website_contact_url' | 'website_scraped_at' |
+  'website_scrape_status' | 'scrape_method' | 'maps_thumbnail' | 'website_og_image' |
+  'photos_scraped_at'
+>;
+
 export interface NewLead {
   zip: string;
   phone: string;
@@ -59,11 +69,21 @@ export interface NewLead {
 
 function row<T>(r: unknown): T { return r as unknown as T; }
 
+export interface ActivityRow {
+  id: number;
+  created_at: string;
+  host: string;
+  type: string;
+  message: string;
+  source: string;
+}
+
 export async function insertLeads(leads: NewLead[]): Promise<number> {
   const db = getDb();
-  let count = 0;
+  const beforeResult = await db.execute('SELECT COUNT(*) as c FROM leads');
+  const before = Number((beforeResult.rows[0] as Record<string, unknown>)['c'] ?? 0);
   for (const l of leads) {
-    const result = await db.execute({
+    await db.execute({
       sql: `INSERT INTO leads
               (zip, phone, name, address, category, rating, review_count, price_level, open_now,
                maps_url, website_url, has_website, scrape_method, maps_thumbnail)
@@ -80,8 +100,10 @@ export async function insertLeads(leads: NewLead[]): Promise<number> {
         l.maps_thumbnail ?? '',
       ],
     });
-    if (result.rowsAffected > 0) count++;
   }
+  const afterResult = await db.execute('SELECT COUNT(*) as c FROM leads');
+  const after = Number((afterResult.rows[0] as Record<string, unknown>)['c'] ?? 0);
+  const count = after - before;
   logger.info({ inserted: count, total: leads.length }, 'leads saved');
   return count;
 }
@@ -99,6 +121,26 @@ export async function getLeadByMapsUrl(mapsUrl: string): Promise<Lead | undefine
 export async function getAllLeads(): Promise<Lead[]> {
   const r = await getDb().execute('SELECT * FROM leads ORDER BY created_at DESC');
   return r.rows.map(row<Lead>);
+}
+
+export async function getLeadList(): Promise<LeadListItem[]> {
+  const r = await getDb().execute(`
+    SELECT
+      id, created_at, updated_at, zip, phone, name, address, category,
+      rating, review_count, price_level, open_now, maps_url, website_url,
+      has_website, details_scraped, reviews_scraped_at, review_scrape_status,
+      website_emails, website_phones, website_contact_url, website_scraped_at,
+      website_scrape_status, scrape_method, maps_thumbnail, website_og_image,
+      photos_scraped_at
+    FROM leads
+    ORDER BY created_at DESC
+  `);
+  return r.rows.map(row<LeadListItem>);
+}
+
+export async function getLeadCount(): Promise<number> {
+  const r = await getDb().execute('SELECT COUNT(*) FROM leads');
+  return Number(r.rows[0]?.[0] ?? 0);
 }
 
 export async function deleteLeads(ids: number[]): Promise<void> {
@@ -274,36 +316,69 @@ export async function clearSmsQueue(status?: 'sent' | 'failed'): Promise<void> {
   }
 }
 
-export async function markZipScraped(zip: string, category: string, leadsFound: number): Promise<void> {
+export async function markZipScraped(zip: string, category: string, leadsFound: number, scrapeMethod = 'maps_fast'): Promise<void> {
   await getDb().execute({
-    sql: `INSERT OR REPLACE INTO scraped_zips (zip, category, scraped_at, leads_found) VALUES (?, ?, datetime('now'), ?)`,
-    args: [zip, category.toLowerCase(), leadsFound],
+    sql: `INSERT OR REPLACE INTO scraped_zips (zip, category, scrape_method, scraped_at, leads_found) VALUES (?, ?, ?, datetime('now'), ?)`,
+    args: [zip, category.toLowerCase(), scrapeMethod, leadsFound],
   });
 }
 
 export async function logActivity(host: string, type: string, message: string, source = 'main'): Promise<void> {
   await getDb().execute({ sql: `INSERT INTO scrape_activity (host, type, message, source) VALUES (?, ?, ?, ?)`, args: [host, type, message, source] });
-  // Keep only last 500 events
-  await getDb().execute(`DELETE FROM scrape_activity WHERE id NOT IN (SELECT id FROM scrape_activity ORDER BY id DESC LIMIT 500)`);
 }
 
-export async function getRecentActivity(sinceId = 0): Promise<{ id: number; created_at: string; host: string; type: string; message: string; source: string }[]> {
+function activityRow(rowData: unknown): ActivityRow {
+  const cells = rowData as Record<number, unknown>;
+  return {
+    id: Number(cells[0]),
+    created_at: String(cells[1]),
+    host: String(cells[2]),
+    type: String(cells[3]),
+    message: String(cells[4]),
+    source: String(cells[5]),
+  };
+}
+
+export async function getRecentActivity(sinceId = 0): Promise<ActivityRow[]> {
   const r = await getDb().execute({ sql: `SELECT * FROM scrape_activity WHERE id > ? ORDER BY id ASC`, args: [sinceId] });
-  return r.rows.map(row => ({
-    id: Number(row[0]), created_at: String(row[1]), host: String(row[2]),
-    type: String(row[3]), message: String(row[4]), source: String(row[5]),
-  }));
+  return r.rows.map(activityRow);
+}
+
+export async function getActivityHistory(limit = 200, source?: string): Promise<ActivityRow[]> {
+  const cappedLimit = Math.min(Math.max(Math.floor(limit) || 200, 1), 2000);
+  const sql = source
+    ? `SELECT * FROM (SELECT * FROM scrape_activity WHERE source = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC`
+    : `SELECT * FROM (SELECT * FROM scrape_activity ORDER BY id DESC LIMIT ?) ORDER BY id ASC`;
+  const args = source ? [source, cappedLimit] : [cappedLimit];
+  const r = await getDb().execute({ sql, args });
+  return r.rows.map(activityRow);
 }
 
 // Atomically claim a zip for scraping — returns true if claimed, false if already taken
-export async function claimZip(zip: string, category: string, workerId: string): Promise<boolean> {
+export async function claimZip(zip: string, category: string, workerId: string, scraperType = 'maps'): Promise<boolean> {
+  const db = getDb();
+  const normalizedCategory = category.toLowerCase();
   try {
-    await getDb().execute({
-      sql: `INSERT INTO scrape_claims (zip, category, claimed_by) VALUES (?, ?, ?)`,
-      args: [zip, category.toLowerCase(), workerId],
+    await db.execute({
+      sql: `INSERT INTO scrape_claims (zip, category, claimed_by, scraper_type, updated_at) VALUES (?, ?, ?, ?, datetime('now'))`,
+      args: [zip, normalizedCategory, workerId, scraperType],
     });
     return true;
   } catch {
+    const host = workerId.split(':')[0] ?? workerId;
+    const existing = await db.execute({
+      sql: `SELECT claimed_by FROM scrape_claims WHERE zip = ? AND category = ?`,
+      args: [zip, normalizedCategory],
+    });
+    const claimedBy = String(existing.rows[0]?.[0] ?? '');
+    if (claimedBy.startsWith(`${host}:`)) {
+      await db.execute({ sql: `DELETE FROM scrape_claims WHERE zip = ? AND category = ?`, args: [zip, normalizedCategory] });
+      await db.execute({
+        sql: `INSERT INTO scrape_claims (zip, category, claimed_by, scraper_type, updated_at) VALUES (?, ?, ?, ?, datetime('now'))`,
+        args: [zip, normalizedCategory, workerId, scraperType],
+      });
+      return true;
+    }
     return false; // already claimed by another computer
   }
 }
@@ -317,9 +392,240 @@ export async function releaseStaleZipClaims(): Promise<void> {
   await getDb().execute(`DELETE FROM scrape_claims WHERE claimed_at < datetime('now', '-2 hours')`);
 }
 
-export async function getScrapedZipSet(): Promise<Set<string>> {
-  const r = await getDb().execute('SELECT zip, category FROM scraped_zips');
+export async function getScrapedZipSet(scrapeMethod?: string): Promise<Set<string>> {
+  const r = scrapeMethod
+    ? await getDb().execute({ sql: 'SELECT zip, category FROM scraped_zips WHERE scrape_method = ?', args: [scrapeMethod] })
+    : await getDb().execute('SELECT zip, category FROM scraped_zips');
   return new Set(r.rows.map((row) => `${row[0]}::${row[1]}`));
+}
+
+export interface CategoryZipStatus {
+  zip: string;
+  category: string;
+  scrapedCount: number;
+  attemptCount: number;
+  failedCount: number;
+  skippedCount: number;
+  leadsFound: number;
+  lastScraper: string;
+  lastHost: string;
+  lastScrapedAt: string;
+}
+
+export async function getCategoryZipStatuses(): Promise<CategoryZipStatus[]> {
+  const statuses = new Map<string, CategoryZipStatus>();
+  const getStatus = (zip: string, category: string): CategoryZipStatus => {
+    const key = `${zip}::${category.toLowerCase()}`;
+    const existing = statuses.get(key);
+    if (existing) return existing;
+    const next: CategoryZipStatus = {
+      zip,
+      category: category.toLowerCase(),
+      scrapedCount: 0,
+      attemptCount: 0,
+      failedCount: 0,
+      skippedCount: 0,
+      leadsFound: 0,
+      lastScraper: '',
+      lastHost: '',
+      lastScrapedAt: '',
+    };
+    statuses.set(key, next);
+    return next;
+  };
+
+  const scraped = await getDb().execute('SELECT zip, category, scrape_method, scraped_at, leads_found FROM scraped_zips');
+  const fallbackDoneKeys = new Set<string>();
+  for (const rowData of scraped.rows) {
+    const cells = rowData as Record<number, unknown>;
+    const zip = String(cells[0] ?? '');
+    const category = String(cells[1] ?? '').toLowerCase();
+    if (!zip || !category) continue;
+    const status = getStatus(zip, category);
+    fallbackDoneKeys.add(`${zip}::${category}`);
+    status.leadsFound = Number(cells[4] ?? status.leadsFound);
+    const scrapedAt = String(cells[3] ?? '');
+    if (scrapedAt >= status.lastScrapedAt) {
+      status.lastScrapedAt = scrapedAt;
+      status.lastScraper = String(cells[2] ?? status.lastScraper);
+      status.lastHost = status.lastHost || 'unknown';
+    }
+  }
+
+  const runItems = await getDb().execute(`
+    SELECT i.zip, i.category, i.scraper_type, i.status, i.attempts, i.finished_at, i.started_at, r.host, r.updated_at
+    FROM scrape_run_items i
+    LEFT JOIN scrape_runs r ON r.id = i.run_id
+    ORDER BY i.id ASC
+  `);
+  for (const rowData of runItems.rows) {
+    const cells = rowData as Record<number, unknown>;
+    const zip = String(cells[0] ?? '');
+    const category = String(cells[1] ?? '').toLowerCase();
+    if (!zip || !category) continue;
+    const status = getStatus(zip, category);
+    const itemStatus = String(cells[3] ?? '');
+    const attempts = Math.max(Number(cells[4] ?? 0), itemStatus === 'pending' ? 0 : 1);
+    status.attemptCount += attempts;
+    if (itemStatus === 'done') status.scrapedCount++;
+    if (itemStatus === 'failed') status.failedCount++;
+    if (itemStatus === 'skipped') status.skippedCount++;
+
+    const finishedAt = String(cells[5] ?? '');
+    const startedAt = String(cells[6] ?? '');
+    const updatedAt = String(cells[8] ?? '');
+    const lastAt = finishedAt || startedAt || updatedAt;
+    if (lastAt >= status.lastScrapedAt) {
+      status.lastScrapedAt = lastAt;
+      status.lastScraper = String(cells[2] ?? status.lastScraper);
+      status.lastHost = String(cells[7] ?? status.lastHost);
+    }
+  }
+
+  for (const key of fallbackDoneKeys) {
+    const status = statuses.get(key);
+    if (status && status.scrapedCount === 0) status.scrapedCount = 1;
+  }
+
+  return [...statuses.values()].sort((a, b) => a.category.localeCompare(b.category) || a.zip.localeCompare(b.zip));
+}
+
+export interface ScrapeRun {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  host: string;
+  scraper_type: string;
+  status: 'pending' | 'running' | 'paused' | 'stopped' | 'done' | 'failed';
+  total_items: number;
+  completed_items: number;
+  failed_items: number;
+  skipped_items: number;
+  found: number;
+  saved: number;
+  duplicates: number;
+  request_json: string;
+  cursor_json: string;
+  last_message: string;
+}
+
+export interface ScrapeRunItem {
+  id: number;
+  run_id: string;
+  scraper_type: string;
+  zip: string;
+  category: string;
+  lead_id: number | null;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+  attempts: number;
+  started_at: string;
+  finished_at: string;
+  last_error: string;
+  result_json: string;
+}
+
+export async function createScrapeRun(opts: {
+  host: string;
+  scraperType: string;
+  request: unknown;
+  items: { zip: string; category: string; scraperType?: string; leadId?: number | null }[];
+}): Promise<string> {
+  const db = getDb();
+  const id = randomUUID();
+  await db.batch([
+    {
+      sql: `INSERT INTO scrape_runs
+              (id, host, scraper_type, status, total_items, request_json, last_message)
+            VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
+      args: [id, opts.host, opts.scraperType, opts.items.length, JSON.stringify(opts.request), 'Created scrape run'],
+    },
+    ...opts.items.map((item) => ({
+      sql: `INSERT INTO scrape_run_items (run_id, scraper_type, zip, category, lead_id)
+            VALUES (?, ?, ?, ?, ?)`,
+      args: [id, item.scraperType ?? opts.scraperType, item.zip, item.category.toLowerCase(), item.leadId ?? null],
+    })),
+  ], 'write');
+  return id;
+}
+
+export async function updateScrapeRun(id: string, patch: {
+  status?: ScrapeRun['status'];
+  completedDelta?: number;
+  failedDelta?: number;
+  skippedDelta?: number;
+  foundDelta?: number;
+  savedDelta?: number;
+  duplicatesDelta?: number;
+  cursor?: unknown;
+  message?: string;
+}): Promise<void> {
+  await getDb().execute({
+    sql: `UPDATE scrape_runs SET
+            status = COALESCE(?, status),
+            completed_items = completed_items + ?,
+            failed_items = failed_items + ?,
+            skipped_items = skipped_items + ?,
+            found = found + ?,
+            saved = saved + ?,
+            duplicates = duplicates + ?,
+            cursor_json = CASE WHEN ? != '' THEN ? ELSE cursor_json END,
+            last_message = CASE WHEN ? != '' THEN ? ELSE last_message END,
+            updated_at = datetime('now')
+          WHERE id = ?`,
+    args: [
+      patch.status ?? null,
+      patch.completedDelta ?? 0,
+      patch.failedDelta ?? 0,
+      patch.skippedDelta ?? 0,
+      patch.foundDelta ?? 0,
+      patch.savedDelta ?? 0,
+      patch.duplicatesDelta ?? 0,
+      patch.cursor === undefined ? '' : JSON.stringify(patch.cursor),
+      patch.cursor === undefined ? '' : JSON.stringify(patch.cursor),
+      patch.message ?? '',
+      patch.message ?? '',
+      id,
+    ],
+  });
+}
+
+export async function markScrapeRunItem(runId: string, zip: string, category: string, status: ScrapeRunItem['status'], result: unknown = {}, error = ''): Promise<void> {
+  await getDb().execute({
+    sql: `UPDATE scrape_run_items SET
+            status = ?,
+            attempts = CASE WHEN ? = 'running' THEN attempts + 1 ELSE attempts END,
+            started_at = CASE WHEN ? = 'running' THEN datetime('now') ELSE started_at END,
+            finished_at = CASE WHEN ? IN ('done','failed','skipped') THEN datetime('now') ELSE finished_at END,
+            last_error = ?,
+            result_json = ? 
+          WHERE run_id = ? AND zip = ? AND category = ?`,
+    args: [status, status, status, status, error, JSON.stringify(result), runId, zip, category.toLowerCase()],
+  });
+}
+
+export async function getLatestResumableScrapeRun(): Promise<ScrapeRun | undefined> {
+  const r = await getDb().execute(
+    `SELECT * FROM scrape_runs
+     WHERE status IN ('pending','running','paused','stopped','failed')
+     ORDER BY updated_at DESC
+     LIMIT 1`
+  );
+  return r.rows[0] ? row<ScrapeRun>(r.rows[0]) : undefined;
+}
+
+export async function getScrapeRun(id: string): Promise<ScrapeRun | undefined> {
+  const r = await getDb().execute({ sql: `SELECT * FROM scrape_runs WHERE id = ?`, args: [id] });
+  return r.rows[0] ? row<ScrapeRun>(r.rows[0]) : undefined;
+}
+
+export async function getPendingScrapeRunItems(runId: string): Promise<ScrapeRunItem[]> {
+  const r = await getDb().execute({
+    sql: `SELECT * FROM scrape_run_items
+          WHERE run_id = ? AND status IN ('pending','running','failed')
+          ORDER BY id ASC`,
+    args: [runId],
+  });
+  return r.rows.map(row<ScrapeRunItem>);
 }
 
 export async function getOutreachLog(): Promise<unknown[]> {

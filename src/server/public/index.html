@@ -130,6 +130,11 @@
             class="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2 px-5 rounded-xl text-sm transition-colors ring-2 ring-emerald-300"
             x-text="masterScraping?'Master scraping...':'🚀 Master Scraper'">
           </button>
+          <button x-show="!scraping && resumable.pending>0" @click="resumeScrape()"
+            class="bg-sky-600 hover:bg-sky-700 text-white font-semibold py-2 px-4 rounded-xl text-sm"
+            x-text="'Resume ('+resumable.pending+')'"></button>
+          <button x-show="scraping" @click="pauseScrape()" :disabled="stopping"
+            class="bg-amber-500 hover:bg-amber-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50">Pause</button>
           <button x-show="scraping||masterScraping" @click="stopScrape()" :disabled="stopping" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50" x-text="stopping?'Stopping...':'Stop'"></button>
         </div>
       </div>
@@ -268,16 +273,22 @@
                 </div>
                 <div class="space-y-0.5">
                   <template x-for="cat in group.items" :key="cat">
-                    <label class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer">
+                    <label class="flex items-start gap-2 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer">
                       <input type="checkbox" :checked="selectedCats.has(cat)" @change="toggleCat(cat)"
-                        class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-400">
-                      <span class="text-sm text-slate-700 flex-1" x-text="cat"></span>
+                        class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-400 mt-0.5">
+                      <span class="flex-1 min-w-0">
+                        <span class="text-sm text-slate-700 block truncate" x-text="cat"></span>
+                        <span x-show="categoryStatusSummary(cat)"
+                          :title="categoryStatusTooltip(cat)"
+                          class="text-[10px] text-slate-400 block truncate"
+                          x-text="categoryStatusSummary(cat)"></span>
+                      </span>
                       <!-- Active claim indicator -->
-                      <template x-if="claimedCatMap.has(cat)">
-                        <span :title="claimTooltip(claimedCatMap.get(cat))"
-                          class="flex items-center gap-0.5 flex-shrink-0">
+                      <template x-if="categoryClaims(cat).length">
+                        <span :title="categoryStatusTooltip(cat)"
+                          class="flex items-center gap-0.5 flex-shrink-0 mt-0.5">
                           <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
-                          <span class="text-xs text-emerald-600 font-semibold" x-text="'🖥'+claimedCatMap.get(cat).length"></span>
+                          <span class="text-xs text-emerald-600 font-semibold" x-text="'🖥'+categoryClaims(cat).length"></span>
                         </span>
                       </template>
                     </label>
@@ -326,16 +337,31 @@
                 <div class="text-slate-400 text-xs">Duplicates</div>
               </div>
               <div class="bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm">
+                <div class="text-xl font-bold text-sky-600" x-text="sessionPercent+'%'"></div>
+                <div class="text-slate-400 text-xs">Progress</div>
+              </div>
+              <div class="bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm">
                 <div class="text-xl font-bold text-slate-700" x-text="stats.total"></div>
                 <div class="text-slate-400 text-xs">Total in DB</div>
               </div>
+              <button @click="resetProcess()" :disabled="scraping||stopping||masterScraping"
+                class="self-center border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40 text-slate-600 text-xs font-semibold px-3 py-2 rounded-xl shadow-sm">
+                Reset Process
+              </button>
             </div>
+          </div>
+          <div class="px-4 py-2 border-b border-slate-200 bg-white">
+            <div class="h-2 rounded-full bg-slate-200 overflow-hidden">
+              <div class="h-full bg-sky-500 transition-all" :style="'width:'+sessionPercent+'%'"></div>
+            </div>
+            <div class="mt-1 text-xs text-slate-500"
+              x-text="session.total ? ((session.jobs + session.skipped)+' / '+session.total+' zip/category jobs completed' + (session.failed ? ' · '+session.failed+' failed retryable' : '')) : 'No active run'"></div>
           </div>
 
           <div class="flex-1 flex flex-col overflow-hidden m-4 bg-slate-900 rounded-2xl border border-slate-700">
             <!-- Log tab bar -->
             <div class="flex items-center border-b border-slate-700 flex-shrink-0 px-2 pt-1 gap-1">
-              <template x-for="tab in [{id:'main',label:'⚡ Main',color:'text-indigo-400'},{id:'detail',label:'📋 Details',color:'text-teal-400'},{id:'website',label:'🌐 Website',color:'text-emerald-400'},{id:'reviews',label:'⭐ Reviews',color:'text-amber-400'},{id:'network',label:'🌐 Network',color:'text-sky-400'}]" :key="tab.id">
+              <template x-for="tab in logTabs" :key="tab.id">
                 <button @click="activeLog=tab.id; logBadges[tab.id]=0"
                   :class="activeLog===tab.id ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'"
                   class="relative text-xs px-3 py-1.5 rounded-t-lg font-medium transition-colors">
@@ -346,19 +372,21 @@
                 </button>
               </template>
               <div class="flex-1"></div>
-              <button @click="logs[activeLog]=[]" class="text-slate-600 hover:text-slate-400 text-xs pb-1">clear</button>
+              <button @click="clearActiveLog()" title="Clears this visible tab only. Saved activity history stays in the database." class="text-slate-600 hover:text-slate-400 text-xs pb-1">clear view</button>
             </div>
 
             <!-- Log content per tab -->
-            <template x-for="tab in ['main','detail','website','reviews']" :key="tab">
+            <template x-for="tab in ['main','detail','website','reviews','photos','sms','forms']" :key="tab">
               <div :id="'log-box-' + tab" x-show="activeLog===tab" class="flex-1 overflow-auto p-4 space-y-0.5">
                 <div x-show="logs[tab].length===0" class="log-line text-slate-600">
-                  <span x-text="tab==='main'?'Start a scrape to see logs here...':tab==='detail'?'Use Re-scrape Details to see logs here...':tab==='website'?'Use Scrape Websites to see logs here...':'Use Scrape Reviews to see logs here...'"></span>
+                  <span x-text="emptyLogMessage(tab)"></span>
                 </div>
                 <template x-for="line in logs[tab]" :key="line.id">
                   <div class="log-line"
-                    :class="{'text-green-400':line.type==='lead','text-red-400':line.type==='error','text-yellow-300':line.type==='done'||line.type==='start','text-slate-400':line.type==='log','text-orange-400':line.type==='stopping'}"
-                    x-text="line.message"></div>
+                    :class="{'text-green-400':line.type==='lead','text-red-400':line.type==='error','text-yellow-300':line.type==='done'||line.type==='start','text-slate-400':line.type==='log','text-orange-400':line.type==='stopping'}">
+                    <span x-show="line.host && line.host !== localHost" class="text-sky-500 font-mono text-xs" x-text="'['+line.host+'] '"></span>
+                    <span x-text="line.message"></span>
+                  </div>
                 </template>
               </div>
             </template>
@@ -433,7 +461,7 @@
           <span class="text-sm font-semibold text-slate-700" x-text="selected.size+' selected'"></span>
           <!-- Master Scrape All button -->
           <button @click="masterScrapeAll()"
-            :disabled="masterScraping||detailScraping||websiteScraping||reviewScraping"
+            :disabled="masterScraping||detailScraping||websiteScraping||reviewScraping||photoScraping"
             class="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-1.5 px-4 rounded-xl text-sm flex items-center gap-2 ring-2 ring-indigo-300">
             🚀 <span x-text="masterScraping?'Scraping all...':'Scrape All ('+selected.size+')'"></span>
           </button>
@@ -470,7 +498,7 @@
           </button>
           <label class="flex items-center gap-1 text-xs text-slate-500">
             Review workers
-            <input x-model.number="form.reviewWorkers" type="number" min="1" max="1"
+            <input x-model.number="form.reviewWorkers" type="number" min="1" max="10"
               class="w-14 border border-slate-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400">
           </label>
           <button @click="bulkDelete()" :disabled="masterScraping"
@@ -567,14 +595,20 @@
                 </td>
                 <!-- Email(s) from website scrape -->
                 <td class="px-3 py-3 text-xs" style="min-width:140px">
-                  <template x-if="!lead.website_emails || lead.website_emails === '[]'">
+                  <template x-if="leadEmails(lead).length === 0">
                     <span class="text-slate-300">—</span>
                   </template>
-                  <template x-if="lead.website_emails && lead.website_emails !== '[]'">
+                  <template x-if="leadEmails(lead).length > 0">
                     <div>
-                      <template x-for="email in JSON.parse(lead.website_emails)" :key="email">
-                        <a :href="'mailto:'+email" class="block text-teal-700 hover:underline font-mono truncate" x-text="email"></a>
+                      <template x-for="(email, i) in (expandedEmails.has(lead.id) ? leadEmails(lead) : leadEmails(lead).slice(0,1))" :key="email">
+                        <a :href="'mailto:'+email"
+                          :class="i===0 ? 'text-teal-700 hover:text-teal-900' : 'text-teal-500 hover:text-teal-700'"
+                          class="block hover:underline font-mono truncate" x-text="email"></a>
                       </template>
+                      <span x-show="leadEmails(lead).length > 1"
+                        @click.stop="expandedEmails.has(lead.id) ? expandedEmails.delete(lead.id) : expandedEmails.add(lead.id); expandedEmails = new Set(expandedEmails)"
+                        class="text-xs text-indigo-500 hover:text-indigo-700 cursor-pointer mt-0.5 inline-block"
+                        x-text="expandedEmails.has(lead.id) ? '▲ less' : '▼ +' + (leadEmails(lead).length - 1) + ' more'"></span>
                     </div>
                   </template>
                 </td>
@@ -1599,13 +1633,22 @@ function app() {
     // Scraper
     form: { maxPerZip: 500, workers: 1, reviewWorkers: 1, skipScraped: true },
     logLines: [],
-    logs: { main: [], detail: [], website: [], reviews: [] },
+    logs: { main: [], detail: [], website: [], reviews: [], photos: [], sms: [], forms: [] },
     activeLog: 'main',
-    logBadges: { main: 0, detail: 0, website: 0, reviews: 0, network: 0 },
+    logBadges: { main: 0, detail: 0, website: 0, reviews: 0, photos: 0, sms: 0, forms: 0, network: 0 },
     networkLog: [],
     networkLastId: 0,
+    visibleLogLimit: 200,
+    localHost: '',
+    activitySeenIds: new Set(),
+    sourceActivitySeenIds: new Set(),
+    activitySeenOrder: [],
+    sourceActivitySeenOrder: [],
     activeClaims: [], // [{zip, category, claimed_by}] — what every computer is scraping right now
-    session: { jobs: 0, found: 0, saved: 0, duplicates: 0 },
+    categoryZipStatuses: [],
+    categoryZipStatusMap: {},
+    session: { runId: '', total: 0, jobs: 0, found: 0, saved: 0, duplicates: 0, skipped: 0, failed: 0 },
+    resumable: { run: null, pending: 0 },
 
     // Leads
     leads: [],
@@ -1637,6 +1680,7 @@ function app() {
     stats: { total: 0 },
     toast: { show: false, msg: '' },
     expandedPhones: new Set(),
+    expandedEmails: new Set(),
     detailPanel: { open: false, tab: 'info', lead: {}, reviews: [], loadingDetails: false, loadingReviews: false },
 
     // SMS templates
@@ -1687,7 +1731,77 @@ function app() {
       return m;
     },
     claimTooltip(claims) {
-      return claims.map(c => `${c.claimed_by} → ${c.category || c.zip}`).join('\n');
+      return claims.map(c => `${c.claimed_by} -> ${c.scraper_type || 'maps'}: ${c.category || c.zip}`).join('\n');
+    },
+
+    statusScopeZips() {
+      if (this.selectedZips.size) return new Set(this.selectedZips);
+      if (this.zipList.length) return new Set(this.zipList);
+      return null;
+    },
+
+    categoryStatusRows(cat) {
+      const rows = this.categoryZipStatusMap[cat.toLowerCase()] || [];
+      const scope = this.statusScopeZips();
+      return scope ? rows.filter(row => scope.has(row.zip)) : rows;
+    },
+
+    categoryClaims(cat) {
+      const claims = this.claimedCatMap.get(cat) || [];
+      const scope = this.statusScopeZips();
+      return scope ? claims.filter(claim => scope.has(claim.zip)) : claims;
+    },
+
+    categoryStatusSummary(cat) {
+      const rows = this.categoryStatusRows(cat);
+      const claims = this.categoryClaims(cat);
+      const scrapedRows = rows.filter(row => Number(row.scrapedCount || 0) > 0);
+      if (!scrapedRows.length && !claims.length) return '';
+
+      const scope = this.statusScopeZips();
+      const methods = [...new Set(scrapedRows.map(row => row.lastScraper).filter(Boolean))];
+      const hosts = [...new Set(scrapedRows.map(row => row.lastHost).filter(Boolean))];
+      const totalScrapes = scrapedRows.reduce((sum, row) => sum + Number(row.scrapedCount || 0), 0);
+      const parts = [];
+      parts.push(scope ? `${scrapedRows.length}/${scope.size} zips` : `${scrapedRows.length} zips`);
+      if (totalScrapes > scrapedRows.length) parts.push(`${totalScrapes}x`);
+      if (methods.length) parts.push(methods.slice(0, 2).join('/'));
+      if (hosts.length) parts.push(hosts.length === 1 ? `by ${hosts[0]}` : `by ${hosts.length} PCs`);
+      if (claims.length) parts.push(`${claims.length} active`);
+      return parts.join(' · ');
+    },
+
+    categoryStatusTooltip(cat) {
+      const claims = this.categoryClaims(cat);
+      const rows = this.categoryStatusRows(cat)
+        .filter(row => Number(row.scrapedCount || 0) > 0 || Number(row.failedCount || 0) > 0 || Number(row.skippedCount || 0) > 0)
+        .sort((a, b) => String(b.lastScrapedAt || '').localeCompare(String(a.lastScrapedAt || '')) || a.zip.localeCompare(b.zip));
+      const lines = [`${cat} status`];
+      if (claims.length) {
+        lines.push('Currently scraping:');
+        for (const claim of claims.slice(0, 12)) {
+          lines.push(`${claim.zip}: ${claim.scraper_type || 'maps'} by ${claim.claimed_by} since ${claim.claimed_at || claim.updated_at || 'now'}`);
+        }
+        if (claims.length > 12) lines.push(`...and ${claims.length - 12} more active claim(s)`);
+      }
+      if (rows.length) {
+        lines.push('Scraped history:');
+        for (const row of rows.slice(0, 20)) {
+          const bits = [
+            `${row.zip}: ${row.lastScraper || 'unknown scraper'}`,
+            `by ${row.lastHost || 'unknown'}`,
+            `${Number(row.scrapedCount || 0)}x`,
+          ];
+          if (Number(row.leadsFound || 0)) bits.push(`${row.leadsFound} leads`);
+          if (Number(row.failedCount || 0)) bits.push(`${row.failedCount} failed`);
+          if (Number(row.skippedCount || 0)) bits.push(`${row.skippedCount} skipped`);
+          if (row.lastScrapedAt) bits.push(`last ${row.lastScrapedAt}`);
+          lines.push(bits.join(' · '));
+        }
+        if (rows.length > 20) lines.push(`...and ${rows.length - 20} more zip(s)`);
+      }
+      if (!claims.length && !rows.length) lines.push('No selected/listed zip has history for this category yet.');
+      return lines.join('\n');
     },
 
     get geoGrouped() {
@@ -1710,6 +1824,97 @@ function app() {
       this.theme = this.theme === 'light' ? 'dark' : 'light';
       localStorage.setItem('theme', this.theme);
       document.documentElement.classList.toggle('dark', this.theme === 'dark');
+    },
+
+    scrollLog(tab) {
+      this.$nextTick(() => {
+        const box = document.getElementById('log-box-' + tab);
+        if (box) box.scrollTop = box.scrollHeight;
+      });
+    },
+
+    appendSourceLog(entry, options = {}) {
+      const src = this.logs[entry.source] ? entry.source : 'main';
+      const line = { ...entry, source: src };
+      this.logs[src].push(line);
+      if (this.logs[src].length > this.visibleLogLimit) this.logs[src] = this.logs[src].slice(-this.visibleLogLimit);
+      if (options.badge !== false && this.activeLog !== src) {
+        this.logBadges[src] = (this.logBadges[src] || 0) + 1;
+      }
+      this.logLines.push(line);
+      if (this.logLines.length > this.visibleLogLimit) this.logLines = this.logLines.slice(-this.visibleLogLimit);
+      this.scrollLog(src);
+    },
+
+    rememberActivityId(setName, orderName, rowId) {
+      if (!rowId) return;
+      this[setName].add(rowId);
+      this[orderName].push(rowId);
+      const maxRemembered = this.visibleLogLimit * 2;
+      if (this[orderName].length > maxRemembered) {
+        this[orderName] = this[orderName].slice(-this.visibleLogLimit);
+        this[setName] = new Set(this[orderName]);
+      }
+    },
+
+    appendNetworkLog(row, options = {}) {
+      const rowId = Number(row.id || 0);
+      if (rowId && this.activitySeenIds.has(rowId)) return false;
+      this.rememberActivityId('activitySeenIds', 'activitySeenOrder', rowId);
+      const line = { ...row, id: rowId || ('network-' + Date.now() + '-' + Math.random()) };
+      this.networkLog.push(line);
+      if (this.networkLog.length > this.visibleLogLimit) this.networkLog = this.networkLog.slice(-this.visibleLogLimit);
+      if (options.badge !== false && this.activeLog !== 'network') {
+        this.logBadges.network = (this.logBadges.network || 0) + 1;
+      }
+      this.scrollLog('network');
+      return true;
+    },
+
+    appendActivitySourceLog(row, options = {}) {
+      const rowId = Number(row.id || 0);
+      if (rowId && this.sourceActivitySeenIds.has(rowId)) return false;
+      this.rememberActivityId('sourceActivitySeenIds', 'sourceActivitySeenOrder', rowId);
+      this.appendSourceLog({
+        ...row,
+        id: rowId ? 'activity-' + rowId : ('activity-' + Date.now() + '-' + Math.random()),
+      }, options);
+      return true;
+    },
+
+    ingestActivityRows(rows, options = {}) {
+      const hydrate = options.hydrate === true;
+      const sorted = [...rows].sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+      for (const row of sorted) {
+        const rowId = Number(row.id || 0);
+        if (rowId) this.networkLastId = Math.max(this.networkLastId, rowId);
+        this.appendNetworkLog(row, { badge: !hydrate });
+
+        // Saved history should rebuild the real tabs after a reopen. During live polling,
+        // only mirror remote hosts into source tabs to avoid duplicating local SSE entries.
+        if (hydrate || row.host !== this.localHost) {
+          this.appendActivitySourceLog(row, { badge: !hydrate });
+        }
+      }
+    },
+
+    async loadSavedLogs() {
+      const rows = await fetch('/api/activity/recent?limit=' + this.visibleLogLimit).then(r => r.json()).catch(() => []);
+      if (Array.isArray(rows) && rows.length) this.ingestActivityRows(rows, { hydrate: true });
+    },
+
+    async pollActivity() {
+      const rows = await fetch('/api/activity?since=' + this.networkLastId).then(r => r.json()).catch(() => []);
+      if (Array.isArray(rows) && rows.length) this.ingestActivityRows(rows);
+    },
+
+    async initActivityFeed() {
+      const meta = await fetch('/api/meta').then(r => r.json()).catch(() => ({}));
+      this.localHost = meta.host || '';
+      await this.loadSavedLogs();
+      await this.pollActivity();
+      if (this._activityPollTimer) clearInterval(this._activityPollTimer);
+      this._activityPollTimer = setInterval(() => this.pollActivity(), 4000);
     },
 
     init() {
@@ -1740,6 +1945,7 @@ function app() {
           if (ui.geoZipSearch) this.geoZipSearch = ui.geoZipSearch;
           if (Array.isArray(ui.selectedZips)) this.selectedZips = new Set(ui.selectedZips);
           if (Array.isArray(ui.selectedCats)) this.selectedCats = new Set(ui.selectedCats);
+          if (Array.isArray(ui.selectedLeadIds)) this.selected = new Set(ui.selectedLeadIds);
         } catch {}
       }
 
@@ -1759,28 +1965,15 @@ function app() {
         geoZipSearch: this.geoZipSearch,
         selectedZips: [...this.selectedZips],
         selectedCats: [...this.selectedCats],
+        selectedLeadIds: [...this.selected],
       }));
-      ['section', 'form', 'filter', 'sort', 'pageSize', 'activeTemplate', 'zipSearch', 'catSearch', 'geoOpen', 'geoState', 'geoZipSearch', 'selectedZips', 'selectedCats']
+      ['section', 'form', 'filter', 'sort', 'pageSize', 'activeTemplate', 'zipSearch', 'catSearch', 'geoOpen', 'geoState', 'geoZipSearch', 'selectedZips', 'selectedCats', 'selected']
         .forEach(key => this.$watch(key, saveUi, { deep: true }));
       this.$watch('filter', () => { this.leadPage = 1; }, { deep: true });
       this.$watch('pageSize', () => { this.leadPage = 1; });
 
       this.loadStats();
-      // Poll network activity from all computers every 4 seconds
-      setInterval(async () => {
-        const rows = await fetch('/api/activity?since=' + this.networkLastId).then(r => r.json()).catch(() => []);
-        if (Array.isArray(rows) && rows.length) {
-          this.networkLastId = rows[rows.length - 1].id;
-          const seen = new Set(this.networkLog.map(l => l.id));
-          const fresh = rows.filter(r => !seen.has(r.id));
-          if (fresh.length) {
-            this.networkLog.push(...fresh);
-            if (this.networkLog.length > 500) this.networkLog = this.networkLog.slice(-500);
-            if (this.activeLog !== 'network') this.logBadges.network = (this.logBadges.network || 0) + fresh.length;
-            this.$nextTick(() => { const b = document.getElementById('log-box-network'); if (b) b.scrollTop = b.scrollHeight; });
-          }
-        }
-      }, 4000);
+      this.initActivityFeed();
 
       // Poll active claims (what every computer is scraping right now) every 4s
       const pollClaims = async () => {
@@ -1789,11 +1982,27 @@ function app() {
       pollClaims();
       setInterval(pollClaims, 4000);
 
+      const pollCategoryStatus = async () => {
+        const rows = await fetch('/api/scrape/category-status').then(r => r.json()).catch(() => []);
+        if (!Array.isArray(rows)) return;
+        this.categoryZipStatuses = rows;
+        this.categoryZipStatusMap = rows.reduce((map, row) => {
+          const key = String(row.category || '').toLowerCase();
+          if (!key) return map;
+          if (!map[key]) map[key] = [];
+          map[key].push(row);
+          return map;
+        }, {});
+      };
+      pollCategoryStatus();
+      setInterval(pollCategoryStatus, 15000);
+
       fetch('/api/scrape/status').then(r => r.json()).then(s => {
         this.scraping = !!s.scraping;
         this.stopping = !!s.stopping;
         if (s.session) this.session = { ...s.session };
       }).catch(() => {});
+      this.loadResumable();
       this.connectSSE();
       // Prefetch geo states list
       fetch('/api/geo/states').then(r => r.json()).then(data => { this.geoStates = data; }).catch(() => {});
@@ -1885,8 +2094,47 @@ function app() {
     },
 
     async loadStats() {
-      const data = await fetch('/api/leads').then(r => r.json()).catch(() => []);
-      this.stats.total = data.length;
+      const data = await fetch('/api/leads/count').then(r => r.json()).catch(() => ({ total: this.leads.length }));
+      this.stats.total = Number(data.total || 0);
+    },
+
+    sessionSnapshot(source = {}, fallback = this.session) {
+      const num = (value, fallbackValue = 0) => {
+        const parsed = Number(value ?? fallbackValue ?? 0);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      return {
+        runId: source.runId || source.id || fallback.runId || '',
+        total: num(source.total ?? source.total_items, fallback.total),
+        jobs: num(source.jobs ?? source.completed_items, fallback.jobs),
+        found: num(source.found, fallback.found),
+        saved: num(source.saved, fallback.saved),
+        duplicates: num(source.duplicates, fallback.duplicates),
+        skipped: num(source.skipped ?? source.skipped_items, fallback.skipped),
+        failed: num(source.failed ?? source.failed_items, fallback.failed),
+      };
+    },
+
+    applySessionSnapshot(source) {
+      this.session = this.sessionSnapshot(source);
+    },
+
+    async loadResumable() {
+      this.resumable = await fetch('/api/scrape/resumable').then(r => r.json()).catch(() => ({ run: null, pending: 0 }));
+      if (!this.scraping && this.resumable.session) this.applySessionSnapshot(this.resumable.session);
+    },
+
+    emptyLogMessage(tab) {
+      const labels = {
+        main: 'Start a scrape to see logs here...',
+        detail: 'Use Re-scrape Details to see logs here...',
+        website: 'Use Scrape Websites to see logs here...',
+        reviews: 'Use Scrape Reviews to see logs here...',
+        photos: 'Use Scrape Photos to see logs here...',
+        sms: 'SMS queue and sending activity appears here...',
+        forms: 'Contact form activity appears here...',
+      };
+      return labels[tab] || 'Waiting for activity...';
     },
 
     connectSSE() {
@@ -1910,22 +2158,22 @@ function app() {
       es.onmessage = (e) => {
         const d = JSON.parse(e.data);
         const src = d.source || 'main';
-        const entry = { id: Date.now() + Math.random(), ...d };
-
-        // Route to correct log bucket
-        if (this.logs[src]) {
-          this.logs[src].push(entry);
-          // Badge for inactive tabs
-          if (this.activeLog !== src) this.logBadges[src] = (this.logBadges[src] || 0) + 1;
-        }
-        // Legacy logLines for compatibility
-        this.logLines.push(entry);
+        const entry = { id: 'live-' + Date.now() + '-' + Math.random(), ...d, source: src };
+        this.appendSourceLog(entry);
 
         if (src === 'main') {
-          if (d.type === 'start') { this.scraping = true; this.stopping = false; this.session = { jobs: 0, found: 0, saved: 0, duplicates: 0 }; }
-          if (d.type === 'stopping') this.stopping = true;
-          if (d.type === 'done') { this.scraping = false; this.stopping = false; this.loadStats(); }
+          if (d.type === 'start') {
+            this.scraping = true;
+            this.stopping = false;
+            this.applySessionSnapshot(d);
+            this.resumable = { run: null, pending: 0 };
+          }
+          if (d.type === 'stopping' || d.type === 'pausing') this.stopping = true;
+          if (d.type === 'paused' || d.type === 'stopped') { this.applySessionSnapshot(d); this.scraping = false; this.stopping = false; this.loadResumable(); }
+          if (d.type === 'done') { this.applySessionSnapshot(d); this.scraping = false; this.stopping = false; this.loadStats(); this.loadResumable(); }
           if (d.type === 'lead') this.session.found++;
+          if (d.type === 'job-skipped') this.session.skipped++;
+          if (d.type === 'error') this.session.failed++;
           if (d.type === 'job-done') {
             this.session.jobs++;
             this.session.saved += d.saved ?? 0;
@@ -1935,11 +2183,6 @@ function app() {
         } else {
           if (d.type === 'done') this.loadStats();
         }
-
-        this.$nextTick(() => {
-          const b = document.getElementById('log-box-' + src);
-          if (b) b.scrollTop = b.scrollHeight;
-        });
       };
     },
 
@@ -1967,7 +2210,7 @@ function app() {
       this.notify(`🚀 Master Scraper: Step 2/4 — scraping websites for ${ids.length} lead(s)...`);
       try {
         this.websiteScraping = true;
-        await fetch('/api/leads/scrape-websites-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+        await fetch('/api/leads/scrape-websites-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, workers: this.form.workers }) });
         this.websiteScraping = false;
         this.notify('✅ Step 2/4 done — websites scraped');
       } catch { this.websiteScraping = false; }
@@ -1975,7 +2218,7 @@ function app() {
       this.notify(`🚀 Master Scraper: Step 3/4 — scraping reviews for ${ids.length} lead(s)...`);
       try {
         this.reviewScraping = true;
-        await fetch('/api/leads/scrape-reviews-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, max: 50 }) });
+        await fetch('/api/leads/scrape-reviews-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, max: 50, reviewWorkers: this.form.reviewWorkers }) });
         this.reviewScraping = false;
         this.notify('✅ Step 3/4 done — reviews scraped');
       } catch { this.reviewScraping = false; }
@@ -1983,7 +2226,7 @@ function app() {
       this.notify(`🚀 Master Scraper: Step 4/4 — scraping photos for ${ids.length} lead(s)...`);
       try {
         this.photoScraping = true;
-        await fetch('/api/leads/scrape-photos-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, max: 20 }) });
+        await fetch('/api/leads/scrape-photos-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, max: 20, workers: this.form.workers }) });
         this.photoScraping = false;
         this.notify('✅ Step 4/4 done — photos collected');
       } catch { this.photoScraping = false; }
@@ -2018,6 +2261,59 @@ function app() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { this.notify(data.error || 'Could not start scrape'); return; }
       if (data.started === false) { this.notify(data.message || 'All zips already scraped'); }
+      else {
+        this.session = data.session || { runId: data.runId || '', total: data.jobs || 0, jobs: 0, found: 0, saved: 0, duplicates: 0, skipped: 0, failed: 0 };
+        this.resumable = { run: null, pending: 0 };
+      }
+    },
+
+    async pauseScrape() {
+      this.stopping = true;
+      await fetch('/api/scrape/pause', { method: 'POST' }).catch(() => {});
+      this.notify('Pause requested. Current zip/category will finish first.');
+    },
+
+    async resumeScrape() {
+      const res = await fetch('/api/scrape/resume', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.resumed === false) {
+        this.notify(data.error || data.message || 'No resumable scrape found');
+        await this.loadResumable();
+        return;
+      }
+      if (data.session) this.applySessionSnapshot(data.session);
+      this.resumable = { run: null, pending: 0 };
+      this.notify('Resumed scrape run');
+    },
+
+    emptySession() {
+      return { runId: '', total: 0, jobs: 0, found: 0, saved: 0, duplicates: 0, skipped: 0, failed: 0 };
+    },
+
+    resetLocalProcessState() {
+      this.session = this.emptySession();
+      this.resumable = { run: null, pending: 0 };
+      this.stopping = false;
+      this.activeClaims = [];
+      this.categoryZipStatuses = [];
+      this.categoryZipStatusMap = {};
+    },
+
+    async resetProcess() {
+      if (this.scraping || this.stopping || this.masterScraping) {
+        this.notify('Stop or pause the scraper before resetting process');
+        return;
+      }
+      if (!confirm('Reset scrape process history and progress?\n\nThis clears jobs done, found/saved/duplicate counters, resume state, active claims, and already-scraped zip/category history. Leads stay in the database.')) return;
+      const res = await fetch('/api/scrape/reset', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        this.notify(data.error || 'Could not reset process');
+        return;
+      }
+      this.resetLocalProcessState();
+      if (data.session) this.applySessionSnapshot(data.session);
+      this.notify('Process reset — ready to start from first');
     },
 
     async stopScrape() {
@@ -2030,8 +2326,10 @@ function app() {
         if (s && !s.scraping && !s.stopping) {
           this.scraping = false;
           this.stopping = false;
+          if (s.session) this.applySessionSnapshot(s.session);
           clearInterval(poll);
           if (this._stopPollTimeout) { clearTimeout(this._stopPollTimeout); this._stopPollTimeout = null; }
+          this.loadResumable();
         }
       }, 800);
       // Hard reset after 12 seconds no matter what
@@ -2039,32 +2337,60 @@ function app() {
     },
 
     async loadLeads() {
-      this.leads = await fetch('/api/leads').then(r => r.json()).catch(() => []);
+      const rows = await fetch('/api/leads').then(r => r.json()).catch(() => []);
+      this.leads = Array.isArray(rows) ? rows.map(l => this.prepareLeadRow(l)) : [];
       this.stats.total = this.leads.length;
       this.leadPage = 1; // always reset page so stale page number never hides results
+      await this.refreshOpenDetailPanel();
+    },
+
+    async refreshOpenDetailPanel() {
+      if (!this.detailPanel.open || !this.detailPanel.lead?.id) return;
+      const id = Number(this.detailPanel.lead.id);
+      const [fresh, reviews] = await Promise.all([
+        fetch('/api/leads/' + id).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/leads/' + id + '/reviews').then(r => r.json()).catch(() => []),
+      ]);
+      if (fresh?.id) this.detailPanel.lead = { ...fresh };
+      this.detailPanel.reviews = Array.isArray(reviews) ? reviews : [];
+    },
+
+    prepareLeadRow(lead) {
+      const websiteEmails = this.parseJsonArray(lead.website_emails);
+      const websitePhones = this.parseJsonArray(lead.website_phones);
+      return {
+        ...lead,
+        _websiteEmails: websiteEmails,
+        _websitePhones: websitePhones,
+        _hasAnyPhone: !!lead.phone || websitePhones.length > 0,
+        _searchText: [lead.name, lead.phone, lead.address, lead.website_url, lead.category, ...websiteEmails, ...websitePhones]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase(),
+      };
+    },
+
+    parseJsonArray(value) {
+      try {
+        const parsed = JSON.parse(value || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
     },
 
     get filteredLeads() {
       const q = this.filter.q.toLowerCase();
       return this.leads.filter(l => {
-        // Search includes website emails + phones found by scraper
-        const extraSearch = [l.website_emails, l.website_phones]
-          .map(v => { try { return JSON.parse(v || '[]').join(' '); } catch { return ''; } })
-          .join(' ');
-        const ms = !q || [l.name, l.phone, l.address, l.website_url, l.category, extraSearch]
-          .some(v => v?.toLowerCase().includes(q));
+        const ms = !q || (l._searchText || '').includes(q);
         const mz = !this.filter.zip || l.zip?.includes(this.filter.zip);
         const mc = !this.filter.cat || l.category?.toLowerCase().includes(this.filter.cat.toLowerCase());
         const mw = this.filter.website === 'all' ||
                    (this.filter.website === 'yes' && l.has_website === 1) ||
                    (this.filter.website === 'no'  && l.has_website !== 1);
-        // Phone filter: check Maps phone AND website_phones
-        const hasAnyPhone = !!l.phone || (() => {
-          try { return JSON.parse(l.website_phones || '[]').length > 0; } catch { return false; }
-        })();
         const mp = this.filter.phone === 'all' ||
-                   (this.filter.phone === 'yes' && hasAnyPhone) ||
-                   (this.filter.phone === 'no'  && !hasAnyPhone);
+                   (this.filter.phone === 'yes' && l._hasAnyPhone) ||
+                   (this.filter.phone === 'no'  && !l._hasAnyPhone);
         return ms && mz && mc && mw && mp;
       });
     },
@@ -2132,12 +2458,13 @@ function app() {
       const res = await fetch('/api/leads/scrape-reviews-bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids, max: 50, reviewWorkers: this.form.reviewWorkers }),
+        body: JSON.stringify({ ids, max: 50, force: true, reviewWorkers: this.form.reviewWorkers }),
       });
       const data = await res.json().catch(() => ({ results: [] }));
       const loaded = (data.results ?? []).reduce((sum, r) => sum + (r.count ?? 0), 0);
       this.reviewScraping = false;
       this.selected = new Set();
+      await this.loadLeads();
       this.notify('Loaded ' + loaded + ' review(s)');
     },
 
@@ -2153,7 +2480,7 @@ function app() {
       fetch('/api/leads/scrape-websites-bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids }),
+        body: JSON.stringify({ ids, workers: this.form.workers }),
       }).then(async () => {
         this.websiteScraping = false;
         await this.loadLeads();
@@ -2191,7 +2518,7 @@ function app() {
         const res = await fetch('/api/leads/scrape-photos-bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids, max: 20 }),
+          body: JSON.stringify({ ids, max: 20, workers: this.form.workers }),
         });
         const d = await res.json().catch(() => ({ results: [] }));
         const total = (d.results ?? []).reduce((s, r) => s + (r.count ?? 0), 0);
@@ -2231,7 +2558,7 @@ function app() {
       const res = await fetch('/api/leads/scrape-details-bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids }),
+        body: JSON.stringify({ ids, workers: this.form.workers }),
       });
       const data = await res.json().catch(() => ({ results: [] }));
       const ok = (data.results ?? []).filter(r => r.success).length;
@@ -2244,7 +2571,7 @@ function app() {
       if (!this.selected.size) return;
       this.masterScraping = true;
       const ids = [...this.selected];
-      this.notify(`🚀 Master scrape started for ${ids.length} lead(s) — details → websites → reviews`);
+      this.notify(`🚀 Master scrape started for ${ids.length} lead(s) — details → websites → reviews → photos`);
 
       // Step 1: Re-scrape details
       try {
@@ -2252,16 +2579,16 @@ function app() {
         const r1 = await fetch('/api/leads/scrape-details-bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids }),
+          body: JSON.stringify({ ids, workers: this.form.workers }),
         });
         const d1 = await r1.json().catch(() => ({ results: [] }));
         const ok1 = (d1.results ?? []).filter(r => r.success).length;
         this.detailScraping = false;
         await this.loadLeads();
-        this.notify(`✅ Step 1/3 done — details updated for ${ok1}/${ids.length}`);
+        this.notify(`✅ Step 1/4 done — details updated for ${ok1}/${ids.length}`);
       } catch (e) {
         this.detailScraping = false;
-        this.notify('❌ Step 1/3 failed (details)');
+        this.notify('❌ Step 1/4 failed (details)');
       }
 
       // Step 2: Scrape websites
@@ -2270,16 +2597,16 @@ function app() {
         const r2 = await fetch('/api/leads/scrape-websites-bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids }),
+          body: JSON.stringify({ ids, workers: this.form.workers }),
         });
         const d2 = await r2.json().catch(() => ({ results: [] }));
         const ok2 = (d2.results ?? []).filter(r => r.success).length;
         this.websiteScraping = false;
         await this.loadLeads();
-        this.notify(`✅ Step 2/3 done — websites scraped for ${ok2}/${ids.length}`);
+        this.notify(`✅ Step 2/4 done — websites scraped for ${ok2}/${ids.length}`);
       } catch (e) {
         this.websiteScraping = false;
-        this.notify('❌ Step 2/3 failed (websites)');
+        this.notify('❌ Step 2/4 failed (websites)');
       }
 
       // Step 3: Scrape reviews
@@ -2288,7 +2615,7 @@ function app() {
         const r3 = await fetch('/api/leads/scrape-reviews-bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids, max: 50, reviewWorkers: this.form.reviewWorkers }),
+          body: JSON.stringify({ ids, max: 50, force: true, reviewWorkers: this.form.reviewWorkers }),
         });
         const d3 = await r3.json().catch(() => ({ results: [] }));
         const loaded = (d3.results ?? []).reduce((sum, r) => sum + (r.count ?? 0), 0);
@@ -2306,7 +2633,7 @@ function app() {
         const r4 = await fetch('/api/leads/scrape-photos-bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids, max: 20 }),
+          body: JSON.stringify({ ids, max: 20, workers: this.form.workers }),
         });
         const d4 = await r4.json().catch(() => ({ results: [] }));
         const photos = (d4.results ?? []).reduce((sum, r) => sum + (r.count ?? 0), 0);
@@ -2333,10 +2660,16 @@ function app() {
 
     async wipeDatabase() {
       if (!confirm('WIPE EVERYTHING from Turso?\n\nThis deletes ALL leads, reviews, SMS queue, and scraped zip history from the cloud. Cannot be undone.')) return;
-      await fetch('/api/db/wipe', { method: 'POST' });
+      const res = await fetch('/api/db/wipe', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        this.notify(data.error || 'Database wipe failed');
+        return;
+      }
       this.selected = new Set();
       this.leads = [];
       this.stats.total = 0;
+      this.resetLocalProcessState();
       this.notify('Database wiped — ready to scrape fresh');
     },
 
@@ -2362,9 +2695,12 @@ function app() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ leadIds: [id], template: this.activeTemplate, templates: this.templates }),
       });
-      const data = await res.json();
-      this.results = data.results;
-      this.notify(data.results[0]?.success ? '📱 SMS sent!' : '❌ SMS failed');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        this.notify(data.error || 'Could not queue SMS');
+        return;
+      }
+      this.notify((data.queued ?? 0) > 0 ? 'Message added to SMS Queue' : 'No message was queued');
     },
 
     async del(id) {
@@ -2486,10 +2822,38 @@ function app() {
     },
 
     addTemplate() {
-      const key = this.newTpl.name.toLowerCase().replace(/\s+/g, '_');
-      this.templates[key] = { name: this.newTpl.name, body: this.newTpl.body };
+      const name = this.newTpl.name.trim();
+      const body = this.newTpl.body.trim();
+      if (!name || !body) return;
+      let key = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+      if (!key) key = 'template';
+      const baseKey = key;
+      let n = 2;
+      while (this.templates[key]) key = baseKey + '_' + n++;
+      this.templates[key] = { name, body };
+      this.activeTemplate = key;
       this.newTpl = { name: '', body: '' };
       this.notify('Template added');
+    },
+
+    get logTabs() {
+      return [
+        { id: 'main', label: 'Main' },
+        { id: 'detail', label: 'Details' },
+        { id: 'website', label: 'Website' },
+        { id: 'reviews', label: 'Reviews' },
+        { id: 'photos', label: 'Photos' },
+        { id: 'sms', label: 'SMS' },
+        { id: 'forms', label: 'Forms' },
+        { id: 'network', label: 'Network' },
+      ];
+    },
+
+    get sessionPercent() {
+      const total = Number(this.session.total || 0);
+      if (!total) return 0;
+      const completed = Number(this.session.jobs || 0) + Number(this.session.skipped || 0);
+      return Math.min(100, Math.round((completed / total) * 100));
     },
 
     deleteTemplate(key) {
@@ -2497,6 +2861,15 @@ function app() {
       const t = { ...this.templates };
       delete t[key];
       this.templates = t;
+      if (!this.templates[this.activeTemplate]) {
+        this.activeTemplate = Object.keys(this.templates)[0] || '';
+      }
+    },
+
+    clearActiveLog() {
+      if (this.activeLog === 'network') this.networkLog = [];
+      else if (this.logs[this.activeLog]) this.logs[this.activeLog] = [];
+      this.logBadges[this.activeLog] = 0;
     },
 
     get detailLead() { return this.detailPanel.lead; },
@@ -2542,7 +2915,8 @@ function app() {
     leadPhones(lead) {
       const raw = [];
       if (lead.phone) raw.push(lead.phone);
-      try { raw.push(...JSON.parse(lead.website_phones || '[]')); } catch {}
+      if (Array.isArray(lead._websitePhones)) raw.push(...lead._websitePhones);
+      else raw.push(...this.parseJsonArray(lead.website_phones));
       const seen = new Set();
       const result = [];
       for (const p of raw) {
@@ -2552,6 +2926,11 @@ function app() {
         result.push(this.normalizePhone(p));
       }
       return result;
+    },
+
+    leadEmails(lead) {
+      if (Array.isArray(lead._websiteEmails)) return lead._websiteEmails;
+      return this.parseJsonArray(lead.website_emails);
     },
 
     get detailAmenities() {
@@ -2586,9 +2965,12 @@ function app() {
 
     async openDetails(lead) {
       this.detailPanel = { open: true, tab: 'info', lead: { ...lead }, reviews: [], loadingDetails: false, loadingReviews: false };
-      // Load existing reviews from DB
-      const reviews = await fetch('/api/leads/' + lead.id + '/reviews').then(r => r.json()).catch(() => []);
-      this.detailPanel.reviews = reviews;
+      const [fullLead, reviews] = await Promise.all([
+        fetch('/api/leads/' + lead.id).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/leads/' + lead.id + '/reviews').then(r => r.json()).catch(() => []),
+      ]);
+      if (fullLead?.id) this.detailPanel.lead = { ...fullLead };
+      this.detailPanel.reviews = Array.isArray(reviews) ? reviews : [];
     },
 
     notify(msg) { this.toast = { show: true, msg }; setTimeout(() => this.toast.show = false, 3000); },

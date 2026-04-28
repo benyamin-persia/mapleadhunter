@@ -7,7 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_DIR   = path.resolve(__dirname, '../../data');
 const LOCAL_DB = path.join(DB_DIR, 'leads-sync.db');
 
-const CURRENT_VERSION = 10;
+const CURRENT_VERSION = 11;
 
 // Full schema for a fresh database — runs in ONE batch (one network call)
 const FULL_SCHEMA = [
@@ -90,6 +90,7 @@ const FULL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS scraped_zips (
     zip         TEXT NOT NULL,
     category    TEXT NOT NULL,
+    scrape_method TEXT NOT NULL DEFAULT 'maps_fast',
     scraped_at  TEXT NOT NULL DEFAULT (datetime('now')),
     leads_found INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (zip, category)
@@ -110,9 +111,45 @@ const FULL_SCHEMA = [
     zip        TEXT NOT NULL,
     category   TEXT NOT NULL,
     claimed_by TEXT NOT NULL DEFAULT '',
+    scraper_type TEXT NOT NULL DEFAULT 'maps',
     claimed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (zip, category)
   )`,
+  `CREATE TABLE IF NOT EXISTS scrape_runs (
+    id              TEXT PRIMARY KEY,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    host            TEXT NOT NULL DEFAULT '',
+    scraper_type    TEXT NOT NULL DEFAULT 'maps',
+    status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','paused','stopped','done','failed')),
+    total_items     INTEGER NOT NULL DEFAULT 0,
+    completed_items INTEGER NOT NULL DEFAULT 0,
+    failed_items    INTEGER NOT NULL DEFAULT 0,
+    skipped_items   INTEGER NOT NULL DEFAULT 0,
+    found           INTEGER NOT NULL DEFAULT 0,
+    saved           INTEGER NOT NULL DEFAULT 0,
+    duplicates      INTEGER NOT NULL DEFAULT 0,
+    request_json    TEXT NOT NULL DEFAULT '{}',
+    cursor_json     TEXT NOT NULL DEFAULT '{}',
+    last_message    TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_scrape_runs_status ON scrape_runs (status, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS scrape_run_items (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       TEXT NOT NULL REFERENCES scrape_runs(id) ON DELETE CASCADE,
+    scraper_type TEXT NOT NULL DEFAULT 'maps',
+    zip          TEXT NOT NULL DEFAULT '',
+    category     TEXT NOT NULL DEFAULT '',
+    lead_id      INTEGER,
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed','skipped')),
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    started_at   TEXT NOT NULL DEFAULT '',
+    finished_at  TEXT NOT NULL DEFAULT '',
+    last_error   TEXT NOT NULL DEFAULT '',
+    result_json  TEXT NOT NULL DEFAULT '{}'
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_scrape_run_items_run_status ON scrape_run_items (run_id, status)`,
   `INSERT OR REPLACE INTO _schema (key, value) VALUES ('version', '${CURRENT_VERSION}')`,
 ];
 
@@ -169,7 +206,48 @@ export async function initDb(): Promise<void> {
           claimed_at TEXT NOT NULL DEFAULT (datetime('now')),
           PRIMARY KEY (zip, category)
         )`,
-        `INSERT OR REPLACE INTO _schema (key, value) VALUES ('version', '10')`,
+      ], 'write');
+    }
+    if (version < 11) {
+      await db.batch([
+        `ALTER TABLE scraped_zips ADD COLUMN scrape_method TEXT NOT NULL DEFAULT 'maps_fast'`,
+        `ALTER TABLE scrape_claims ADD COLUMN scraper_type TEXT NOT NULL DEFAULT 'maps'`,
+        `ALTER TABLE scrape_claims ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`,
+        `CREATE TABLE IF NOT EXISTS scrape_runs (
+          id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          host TEXT NOT NULL DEFAULT '',
+          scraper_type TEXT NOT NULL DEFAULT 'maps',
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','paused','stopped','done','failed')),
+          total_items INTEGER NOT NULL DEFAULT 0,
+          completed_items INTEGER NOT NULL DEFAULT 0,
+          failed_items INTEGER NOT NULL DEFAULT 0,
+          skipped_items INTEGER NOT NULL DEFAULT 0,
+          found INTEGER NOT NULL DEFAULT 0,
+          saved INTEGER NOT NULL DEFAULT 0,
+          duplicates INTEGER NOT NULL DEFAULT 0,
+          request_json TEXT NOT NULL DEFAULT '{}',
+          cursor_json TEXT NOT NULL DEFAULT '{}',
+          last_message TEXT NOT NULL DEFAULT ''
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_scrape_runs_status ON scrape_runs (status, updated_at)`,
+        `CREATE TABLE IF NOT EXISTS scrape_run_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id TEXT NOT NULL REFERENCES scrape_runs(id) ON DELETE CASCADE,
+          scraper_type TEXT NOT NULL DEFAULT 'maps',
+          zip TEXT NOT NULL DEFAULT '',
+          category TEXT NOT NULL DEFAULT '',
+          lead_id INTEGER,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed','skipped')),
+          attempts INTEGER NOT NULL DEFAULT 0,
+          started_at TEXT NOT NULL DEFAULT '',
+          finished_at TEXT NOT NULL DEFAULT '',
+          last_error TEXT NOT NULL DEFAULT '',
+          result_json TEXT NOT NULL DEFAULT '{}'
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_scrape_run_items_run_status ON scrape_run_items (run_id, status)`,
+        `INSERT OR REPLACE INTO _schema (key, value) VALUES ('version', '11')`,
       ], 'write');
     }
   }
@@ -182,7 +260,20 @@ export async function wipeAllData(): Promise<void> {
     'DELETE FROM reviews',
     'DELETE FROM sms_queue',
     'DELETE FROM outreach_log',
+    'DELETE FROM scrape_claims',
+    'DELETE FROM scrape_run_items',
+    'DELETE FROM scrape_runs',
     'DELETE FROM scraped_zips',
     'DELETE FROM leads',
+  ], 'write');
+}
+
+export async function resetScrapeProcessData(): Promise<void> {
+  const db = getDb();
+  await db.batch([
+    'DELETE FROM scrape_claims',
+    'DELETE FROM scrape_run_items',
+    'DELETE FROM scrape_runs',
+    'DELETE FROM scraped_zips',
   ], 'write');
 }
