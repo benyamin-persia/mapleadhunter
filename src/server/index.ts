@@ -272,12 +272,12 @@ app.post('/api/scrape/start', async (req, res) => {
   const scraperType = detailFirst ? 'maps_detail' : 'maps_fast';
 
   if (skipScraped) {
-    const done = await getScrapedZipSet(scraperType);
+    const done = await getScrapedZipSet(); // no method filter — skip if scraped with ANY method
     const before = jobs.length;
     jobs = jobs.filter((j) => !done.has(`${j.zip}::${j.category.toLowerCase()}`));
     const skipped = before - jobs.length;
     if (skipped > 0 && jobs.length === 0) {
-      broadcast({ type: 'log', message: `All selected zip/category jobs were already scraped with ${scraperType}` });
+      broadcast({ type: 'log', message: `All selected zip/category jobs were already scraped` });
       res.json({ started: false, skipped, jobs: 0, message: 'All selected zips already scraped.' });
       return;
     }
@@ -646,7 +646,7 @@ app.post('/api/leads/scrape-details-bulk', async (req, res) => {
   }
   const concurrency = Math.min(Math.max(Number(workers) || 3, 1), 10);
   secondaryShouldStop = false;
-  broadcast({ type: 'start', message: `📋 Detail scrape starting — ${ids.length} lead(s) · ${concurrency} workers${force ? ' · force' : ''}` }, 'detail');
+  broadcast({ type: 'start', message: `📋 Detail scrape starting — ${ids.length} lead(s) · ${concurrency} workers${force ? ' · force' : ''}`, total: ids.length }, 'detail');
   const results: { id: number; name?: string; success: boolean; error?: string }[] = [];
   let done = 0;
   const queue = [...ids];
@@ -666,7 +666,7 @@ app.post('/api/leads/scrape-details-bulk', async (req, res) => {
         results.push({ id, name: lead.name, success: true });
         continue;
       }
-      broadcast({ type: 'log', message: `🔍 [${++done}/${ids.length}] ${lead.name}` }, 'detail');
+      broadcast({ type: 'log', message: `🔍 [${++done}/${ids.length}] ${lead.name}`, current: done, total: ids.length }, 'detail');
       try {
         const details = await scrapeDetails(lead.maps_url);
         await saveDetails(id, details);
@@ -723,7 +723,7 @@ app.post('/api/leads/scrape-reviews-bulk', async (req, res) => {
   }
   const concurrency = Math.min(Math.max(Number(reviewWorkers) || 3, 1), 10);
   secondaryShouldStop = false;
-  broadcast({ type: 'start', message: `⭐ Review scrape starting — ${ids.length} lead(s) · ${concurrency} workers` }, 'reviews');
+  broadcast({ type: 'start', message: `⭐ Review scrape starting — ${ids.length} lead(s) · ${concurrency} workers`, total: ids.length }, 'reviews');
   const results: { id: number; name?: string; count: number; error?: string }[] = [];
   let rdone = 0;
   const queue = [...ids];
@@ -743,7 +743,7 @@ app.post('/api/leads/scrape-reviews-bulk', async (req, res) => {
         results.push({ id, name: lead.name, count: (await getReviews(id)).length });
         continue;
       }
-      broadcast({ type: 'log', message: `⭐ [${++rdone}/${ids.length}] ${lead.name}` }, 'reviews');
+      broadcast({ type: 'log', message: `⭐ [${++rdone}/${ids.length}] ${lead.name}`, current: rdone, total: ids.length }, 'reviews');
       try {
         const reviews = await scrapeReviews(lead.maps_url, Number(max) || 50);
         await saveReviews(id, reviews);
@@ -811,7 +811,7 @@ app.post('/api/leads/scrape-websites-bulk', async (req, res) => {
   if (!Array.isArray(ids) || !ids.length) { res.status(400).json({ error: 'ids required' }); return; }
   const concurrency = Math.min(Math.max(Number(workers) || 3, 1), 10);
   secondaryShouldStop = false;
-  broadcast({ type: 'start', message: `🌐 Website scrape starting — ${ids.length} lead(s) · ${concurrency} workers${force ? ' · force' : ''}` }, 'website');
+  broadcast({ type: 'start', message: `🌐 Website scrape starting — ${ids.length} lead(s) · ${concurrency} workers${force ? ' · force' : ''}`, total: ids.length }, 'website');
 
   const results: { id: number; name?: string; success: boolean; error?: string }[] = [];
   let done = 0;
@@ -836,7 +836,7 @@ app.post('/api/leads/scrape-websites-bulk', async (req, res) => {
         continue;
       }
 
-      broadcast({ type: 'log', message: `🔍 [${++done}/${ids.length}] Crawling ${lead.website_url} (${lead.name})...` }, 'website');
+      broadcast({ type: 'log', message: `🔍 [${++done}/${ids.length}] Crawling ${lead.website_url} (${lead.name})...`, current: done, total: ids.length }, 'website');
 
       try {
         const data = await scrapeWebsite(lead.website_url);
@@ -870,7 +870,7 @@ app.post('/api/leads/scrape-photos-bulk', async (req, res) => {
   if (!Array.isArray(ids) || !ids.length) { res.status(400).json({ error: 'ids required' }); return; }
   const concurrency = Math.min(Math.max(Number(workers) || 3, 1), 10);
   secondaryShouldStop = false;
-  broadcast({ type: 'start', message: `📷 Photo scrape starting — ${ids.length} lead(s) · ${concurrency} workers${force ? ' · force' : ''}` }, 'photos');
+  broadcast({ type: 'start', message: `📷 Photo scrape starting — ${ids.length} lead(s) · ${concurrency} workers${force ? ' · force' : ''}`, total: ids.length }, 'photos');
   const results: { id: number; name?: string; count: number; error?: string }[] = [];
   let done = 0;
   const queue = [...ids];
@@ -890,7 +890,7 @@ app.post('/api/leads/scrape-photos-bulk', async (req, res) => {
         results.push({ id, name: lead.name, count: 0 });
         continue;
       }
-      broadcast({ type: 'log', message: `📷 [${++done}/${ids.length}] ${lead.name}` }, 'photos');
+      broadcast({ type: 'log', message: `📷 [${++done}/${ids.length}] ${lead.name}`, current: done, total: ids.length }, 'photos');
       try {
         const photos = await scrapeMapPhotos(lead.maps_url, Number(max) || 20);
         await savePhotos(id, photos);
@@ -905,6 +905,134 @@ app.post('/api/leads/scrape-photos-bulk', async (req, res) => {
 
   broadcast({ type: 'done', message: `📷 Photo scrape complete — ${results.filter(r => !r.error).length}/${ids.length} done` }, 'photos');
   res.json({ results });
+});
+
+// ── High-Impact bulk scraper ──────────────────────────────────────────────────
+// Phase 1: detail scrape → Phase 2: website + reviews + photos all in PARALLEL
+app.post('/api/scrape/high-impact-bulk', async (req, res) => {
+  const { ids, workers = 5, force = false } = req.body as { ids: number[]; workers?: number; force?: boolean };
+  if (!Array.isArray(ids) || !ids.length) { res.status(400).json({ error: 'ids required' }); return; }
+  const w  = Math.min(Math.max(Number(workers) || 5, 1), 8);
+  const w2 = Math.max(Math.floor(w / 2), 2); // workers per parallel phase-2 scraper
+  secondaryShouldStop = false;
+
+  broadcast({ type: 'start', message: `⚡ High-Impact: ${ids.length} leads · Phase 1: Details (${w} workers)`, total: ids.length }, 'detail');
+
+  // ── Phase 1: Detail scrape ─────────────────────────────────────────────────
+  let d1 = 0;
+  const dq = [...ids];
+  await Promise.all(Array.from({ length: Math.min(w, ids.length) }, async () => {
+    while (!secondaryShouldStop) {
+      const rawId = dq.shift(); if (rawId === undefined) break;
+      const id = Number(rawId);
+      const lead = await getLeadById(id);
+      if (!lead?.maps_url) { broadcast({ type: 'log', message: `⏭ #${id} — no Maps URL` }, 'detail'); continue; }
+      if (!force && lead.details_scraped) { broadcast({ type: 'log', message: `⏭ ${lead.name} — already scraped` }, 'detail'); d1++; continue; }
+      broadcast({ type: 'log', message: `🔍 [${++d1}/${ids.length}] ${lead.name}`, current: d1, total: ids.length }, 'detail');
+      try {
+        const details = await scrapeDetails(lead.maps_url);
+        await saveDetails(id, details);
+        const parts = [];
+        if (details.phone)      parts.push(`☎ ${details.phone}`);
+        if (details.websiteUrl) parts.push(`🌐 ${details.websiteUrl}`);
+        broadcast({ type: 'log', message: `  ✅ ${lead.name}: ${parts.join(' | ') || 'scraped'}` }, 'detail');
+      } catch (err) {
+        broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'detail');
+      }
+    }
+  }));
+  broadcast({ type: 'done', message: `⚡ Phase 1 complete — ${d1}/${ids.length} details processed` }, 'detail');
+
+  if (secondaryShouldStop) {
+    broadcast({ type: 'log', message: '🛑 High-Impact stopped after Phase 1' }, 'detail');
+    res.json({ ok: true, stopped: true }); return;
+  }
+
+  // ── Phase 2: Website + Reviews + Photos in PARALLEL ───────────────────────
+  broadcast({ type: 'start', message: `⚡ Phase 2: Website · Reviews · Photos in parallel (${w2} workers each)`, total: ids.length }, 'website');
+  broadcast({ type: 'start', message: `⚡ Phase 2: Running parallel alongside website`, total: ids.length }, 'reviews');
+  broadcast({ type: 'start', message: `⚡ Phase 2: Running parallel alongside website`, total: ids.length }, 'photos');
+
+  const runWebsitePhase = async () => {
+    let wn = 0; const q = [...ids];
+    await Promise.all(Array.from({ length: Math.min(w2, ids.length) }, async () => {
+      while (!secondaryShouldStop) {
+        const rawId = q.shift(); if (rawId === undefined) break;
+        const id = Number(rawId);
+        const lead = await getLeadById(id); if (!lead) continue;
+        if (!lead.website_url) {
+          await saveWebsiteData(id, { emails: [], phones: [], socialLinks: [], contactUrl: '', hasContactForm: false, status: 'no_website' });
+          continue;
+        }
+        if (!force && lead.website_scrape_status === 'done') { broadcast({ type: 'log', message: `⏭ ${lead.name} — website done` }, 'website'); continue; }
+        broadcast({ type: 'log', message: `🌐 [${++wn}/${ids.length}] ${lead.name}`, current: wn, total: ids.length }, 'website');
+        try {
+          const data = await scrapeWebsite(lead.website_url);
+          await saveWebsiteData(id, { ...data, status: 'done' });
+          const p: string[] = [];
+          if (data.emails.length) p.push(`📧 ${data.emails.length}`);
+          if (data.phones.length) p.push(`📞 ${data.phones.length}`);
+          broadcast({ type: 'log', message: `  ✅ ${lead.name}: ${p.join(' | ') || 'done'}` }, 'website');
+        } catch (err) {
+          await saveWebsiteData(id, { emails: [], phones: [], socialLinks: [], contactUrl: '', hasContactForm: false, status: 'error' });
+          broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'website');
+        }
+      }
+    }));
+    broadcast({ type: 'done', message: `🌐 Website phase complete (${wn} processed)` }, 'website');
+  };
+
+  const runReviewsPhase = async () => {
+    let rn = 0; const q = [...ids];
+    await Promise.all(Array.from({ length: Math.min(w2, ids.length) }, async () => {
+      while (!secondaryShouldStop) {
+        const rawId = q.shift(); if (rawId === undefined) break;
+        const id = Number(rawId);
+        const lead = await getLeadById(id); if (!lead?.maps_url) continue;
+        if (!force && lead.review_scrape_status === 'done') { broadcast({ type: 'log', message: `⏭ ${lead.name} — reviews done` }, 'reviews'); continue; }
+        broadcast({ type: 'log', message: `⭐ [${++rn}/${ids.length}] ${lead.name}`, current: rn, total: ids.length }, 'reviews');
+        try {
+          const reviews = await scrapeReviews(lead.maps_url, 50);
+          await saveReviews(id, reviews);
+          await markReviewScrape(id, 'done');
+          broadcast({ type: 'log', message: `  ✅ ${lead.name}: ${reviews.length} review(s)` }, 'reviews');
+        } catch (err) {
+          await markReviewScrape(id, 'error');
+          broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'reviews');
+        }
+      }
+    }));
+    broadcast({ type: 'done', message: `⭐ Reviews phase complete (${rn} processed)` }, 'reviews');
+  };
+
+  const runPhotosPhase = async () => {
+    let pn = 0; const q = [...ids];
+    await Promise.all(Array.from({ length: Math.min(w2, ids.length) }, async () => {
+      while (!secondaryShouldStop) {
+        const rawId = q.shift(); if (rawId === undefined) break;
+        const id = Number(rawId);
+        const lead = await getLeadById(id); if (!lead?.maps_url) continue;
+        if (!force && lead.photos_scraped_at) { broadcast({ type: 'log', message: `⏭ ${lead.name} — photos done` }, 'photos'); continue; }
+        broadcast({ type: 'log', message: `📷 [${++pn}/${ids.length}] ${lead.name}`, current: pn, total: ids.length }, 'photos');
+        try {
+          const photos = await scrapeMapPhotos(lead.maps_url, 20);
+          await savePhotos(id, photos);
+          broadcast({ type: 'log', message: `  ✅ ${lead.name}: ${photos.length} photo(s)` }, 'photos');
+        } catch (err) {
+          broadcast({ type: 'error', message: `  ❌ ${lead.name}: ${String(err)}` }, 'photos');
+        }
+      }
+    }));
+    broadcast({ type: 'done', message: `📷 Photos phase complete (${pn} processed)` }, 'photos');
+  };
+
+  await Promise.all([runWebsitePhase(), runReviewsPhase(), runPhotosPhase()]);
+
+  const finalMsg = secondaryShouldStop
+    ? '🛑 High-Impact stopped during Phase 2'
+    : `⚡ High-Impact complete — ${ids.length} leads fully enriched`;
+  broadcast({ type: secondaryShouldStop ? 'log' : 'done', message: finalMsg }, 'detail');
+  res.json({ ok: true, total: ids.length, stopped: secondaryShouldStop });
 });
 
 // ── Contact form submitter ────────────────────────────────────────────────────

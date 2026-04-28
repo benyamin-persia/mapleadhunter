@@ -80,18 +80,14 @@ export interface ActivityRow {
 
 export async function insertLeads(leads: NewLead[]): Promise<number> {
   const db = getDb();
-  const beforeResult = await db.execute('SELECT COUNT(*) as c FROM leads');
-  const before = Number((beforeResult.rows[0] as Record<string, unknown>)['c'] ?? 0);
+  let count = 0;
   for (const l of leads) {
-    await db.execute({
-      sql: `INSERT INTO leads
+    // INSERT OR IGNORE gives rowsAffected=1 for new rows, 0 for conflicts — accurate per-row, concurrency-safe
+    const r = await db.execute({
+      sql: `INSERT OR IGNORE INTO leads
               (zip, phone, name, address, category, rating, review_count, price_level, open_now,
                maps_url, website_url, has_website, scrape_method, maps_thumbnail)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(maps_url) DO UPDATE SET
-              phone = CASE WHEN leads.phone = '' AND excluded.phone != '' THEN excluded.phone ELSE leads.phone END,
-              maps_thumbnail = CASE WHEN excluded.maps_thumbnail != '' THEN excluded.maps_thumbnail ELSE leads.maps_thumbnail END,
-              updated_at = CASE WHEN leads.phone = '' AND excluded.phone != '' THEN datetime('now') ELSE leads.updated_at END`,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         l.zip, l.phone, l.name, l.address, l.category,
         l.rating, l.reviewCount, l.priceLevel, l.openNow,
@@ -100,10 +96,20 @@ export async function insertLeads(leads: NewLead[]): Promise<number> {
         l.maps_thumbnail ?? '',
       ],
     });
+    if (r.rowsAffected > 0) {
+      count++;
+    } else {
+      // Existing record — enrich phone/thumbnail if the new scrape has better data
+      await db.execute({
+        sql: `UPDATE leads SET
+                phone = CASE WHEN phone = '' AND ? != '' THEN ? ELSE phone END,
+                maps_thumbnail = CASE WHEN ? != '' THEN ? ELSE maps_thumbnail END,
+                updated_at = CASE WHEN phone = '' AND ? != '' THEN datetime('now') ELSE updated_at END
+              WHERE maps_url = ?`,
+        args: [l.phone, l.phone, l.maps_thumbnail ?? '', l.maps_thumbnail ?? '', l.phone, l.maps_url],
+      });
+    }
   }
-  const afterResult = await db.execute('SELECT COUNT(*) as c FROM leads');
-  const after = Number((afterResult.rows[0] as Record<string, unknown>)['c'] ?? 0);
-  const count = after - before;
   logger.info({ inserted: count, total: leads.length }, 'leads saved');
   return count;
 }

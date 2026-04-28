@@ -126,17 +126,22 @@
             x-text="stopping?'Stopping...':(scraping?'Running...':'🔍 Detail Scrape')">
           </button>
           <button @click="masterScrapeFromScraper()"
-            :disabled="scraping || stopping || masterScraping || selectedZips.size===0 || selectedCats.size===0"
+            :disabled="scraping || stopping || masterScraping || highImpactScraping || selectedZips.size===0 || selectedCats.size===0"
             class="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2 px-5 rounded-xl text-sm transition-colors ring-2 ring-emerald-300"
             x-text="masterScraping?'Master scraping...':'🚀 Master Scraper'">
+          </button>
+          <button @click="highImpactScrapeFromScraper()"
+            :disabled="scraping || stopping || masterScraping || highImpactScraping || selectedZips.size===0 || selectedCats.size===0"
+            class="bg-orange-600 hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2 px-5 rounded-xl text-sm transition-colors ring-2 ring-orange-300"
+            x-text="highImpactScraping?'Ultra scraping...':'⚡ Ultra Scrape'">
           </button>
           <button x-show="!scraping && resumable.pending>0" @click="resumeScrape()"
             class="bg-sky-600 hover:bg-sky-700 text-white font-semibold py-2 px-4 rounded-xl text-sm"
             x-text="'Resume ('+resumable.pending+')'"></button>
           <button x-show="scraping" @click="pauseScrape()" :disabled="stopping"
             class="bg-amber-500 hover:bg-amber-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50">Pause</button>
-          <button x-show="scraping||masterScraping" @click="stopScrape()" :disabled="stopping||secondaryStopping" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50" x-text="(stopping||secondaryStopping)?'Stopping...':'Stop'"></button>
-          <button x-show="!scraping && (websiteScraping||detailScraping||reviewScraping||photoScraping)" @click="stopSecondaryScrape()" :disabled="secondaryStopping"
+          <button x-show="scraping||masterScraping||highImpactScraping" @click="stopScrape()" :disabled="stopping||secondaryStopping" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50" x-text="(stopping||secondaryStopping)?'Stopping...':'Stop'"></button>
+          <button x-show="!scraping && (websiteScraping||detailScraping||reviewScraping||photoScraping||highImpactScraping)" @click="stopSecondaryScrape()" :disabled="secondaryStopping"
             class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-xl text-sm disabled:opacity-50"
             x-text="secondaryStopping?'Stopping...':'🛑 Stop'"></button>
         </div>
@@ -353,12 +358,57 @@
               </button>
             </div>
           </div>
-          <div class="px-4 py-2 border-b border-slate-200 bg-white">
-            <div class="h-2 rounded-full bg-slate-200 overflow-hidden">
-              <div class="h-full bg-sky-500 transition-all" :style="'width:'+sessionPercent+'%'"></div>
+          <div class="px-4 py-3 border-b border-slate-200 bg-white space-y-2">
+            <!-- Map Scrape -->
+            <div>
+              <div class="flex items-center justify-between text-xs mb-1">
+                <span class="font-medium text-sky-600">🗺 Map Scrape</span>
+                <span class="text-slate-500" x-text="session.total ? sessionPercent+'% · '+(session.jobs+session.skipped)+'/'+session.total+(session.failed?' · '+session.failed+' failed':'') : (scraping?'starting...':'—')"></span>
+              </div>
+              <div class="h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                <div class="h-full bg-sky-500 transition-all duration-300" :style="'width:'+sessionPercent+'%'"></div>
+              </div>
             </div>
-            <div class="mt-1 text-xs text-slate-500"
-              x-text="session.total ? ((session.jobs + session.skipped)+' / '+session.total+' zip/category jobs completed' + (session.failed ? ' · '+session.failed+' failed retryable' : '')) : 'No active run'"></div>
+            <!-- Detail Scrape -->
+            <div x-show="detailScraping || detailProgress.total > 0">
+              <div class="flex items-center justify-between text-xs mb-1">
+                <span class="font-medium text-indigo-600">🔍 Detail Scrape</span>
+                <span class="text-slate-500" x-text="detailProgress.total ? Math.round(detailProgress.current/detailProgress.total*100)+'% · '+detailProgress.current+'/'+detailProgress.total : 'starting...'"></span>
+              </div>
+              <div class="h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                <div class="h-full bg-indigo-500 transition-all duration-300" :style="'width:'+(detailProgress.total?Math.round(detailProgress.current/detailProgress.total*100):0)+'%'"></div>
+              </div>
+            </div>
+            <!-- Website Scrape -->
+            <div x-show="websiteScraping || websiteProgress.total > 0">
+              <div class="flex items-center justify-between text-xs mb-1">
+                <span class="font-medium text-teal-600">🌐 Website Scrape</span>
+                <span class="text-slate-500" x-text="websiteProgress.total ? Math.round(websiteProgress.current/websiteProgress.total*100)+'% · '+websiteProgress.current+'/'+websiteProgress.total : 'starting...'"></span>
+              </div>
+              <div class="h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                <div class="h-full bg-teal-500 transition-all duration-300" :style="'width:'+(websiteProgress.total?Math.round(websiteProgress.current/websiteProgress.total*100):0)+'%'"></div>
+              </div>
+            </div>
+            <!-- Reviews Scrape -->
+            <div x-show="reviewScraping || reviewProgress.total > 0">
+              <div class="flex items-center justify-between text-xs mb-1">
+                <span class="font-medium text-amber-600">⭐ Reviews Scrape</span>
+                <span class="text-slate-500" x-text="reviewProgress.total ? Math.round(reviewProgress.current/reviewProgress.total*100)+'% · '+reviewProgress.current+'/'+reviewProgress.total : 'starting...'"></span>
+              </div>
+              <div class="h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                <div class="h-full bg-amber-500 transition-all duration-300" :style="'width:'+(reviewProgress.total?Math.round(reviewProgress.current/reviewProgress.total*100):0)+'%'"></div>
+              </div>
+            </div>
+            <!-- Photos Scrape -->
+            <div x-show="photoScraping || photoProgress.total > 0">
+              <div class="flex items-center justify-between text-xs mb-1">
+                <span class="font-medium text-orange-600">📷 Photos Scrape</span>
+                <span class="text-slate-500" x-text="photoProgress.total ? Math.round(photoProgress.current/photoProgress.total*100)+'% · '+photoProgress.current+'/'+photoProgress.total : 'starting...'"></span>
+              </div>
+              <div class="h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                <div class="h-full bg-orange-500 transition-all duration-300" :style="'width:'+(photoProgress.total?Math.round(photoProgress.current/photoProgress.total*100):0)+'%'"></div>
+              </div>
+            </div>
           </div>
 
           <div class="flex-1 flex flex-col overflow-hidden m-4 bg-slate-900 rounded-2xl border border-slate-700">
@@ -464,11 +514,17 @@
           <span class="text-sm font-semibold text-slate-700" x-text="selected.size+' selected'"></span>
           <!-- Master Scrape All button -->
           <button @click="masterScrapeAll()"
-            :disabled="masterScraping||detailScraping||websiteScraping||reviewScraping||photoScraping"
+            :disabled="masterScraping||highImpactScraping||detailScraping||websiteScraping||reviewScraping||photoScraping"
             class="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-1.5 px-4 rounded-xl text-sm flex items-center gap-2 ring-2 ring-indigo-300">
             🚀 <span x-text="masterScraping?'Scraping all...':'Scrape All ('+selected.size+')'"></span>
           </button>
-          <button x-show="masterScraping||detailScraping||websiteScraping||reviewScraping||photoScraping"
+          <!-- High-Impact Scrape All button -->
+          <button @click="highImpactScrapeAll()"
+            :disabled="masterScraping||highImpactScraping||detailScraping||websiteScraping||reviewScraping||photoScraping"
+            class="bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white font-bold py-1.5 px-4 rounded-xl text-sm flex items-center gap-2 ring-2 ring-orange-300">
+            ⚡ <span x-text="highImpactScraping?'High-Impact running...':'High Impact ('+selected.size+')'"></span>
+          </button>
+          <button x-show="masterScraping||highImpactScraping||detailScraping||websiteScraping||reviewScraping||photoScraping"
             @click="stopSecondaryScrape()" :disabled="secondaryStopping"
             class="bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white font-bold py-1.5 px-4 rounded-xl text-sm"
             x-text="secondaryStopping?'Stopping...':'🛑 Stop'">
@@ -1679,6 +1735,11 @@ function app() {
     sheetsBackingUp: false,
     formSending: false,
     masterScraping: false,
+    highImpactScraping: false,
+    detailProgress:  { current: 0, total: 0 },
+    websiteProgress: { current: 0, total: 0 },
+    reviewProgress:  { current: 0, total: 0 },
+    photoProgress:   { current: 0, total: 0 },
     formModal: { open: false, sender: { name: '', email: '', phone: '', message: "Hi, I saw {name} on Google Maps and noticed you don't have a website. I build websites, apps and AI assistants. Happy to help if you're interested. Feel free to reply here or call me." } },
     results: [],
     outreach: [],
@@ -2194,7 +2255,25 @@ function app() {
             this.loadStats();
           }
         } else {
-          if (d.type === 'done') this.loadStats();
+          if (d.type === 'start' && d.total) {
+            if (src === 'detail')  this.detailProgress  = { current: 0, total: d.total };
+            if (src === 'website') this.websiteProgress = { current: 0, total: d.total };
+            if (src === 'reviews') this.reviewProgress  = { current: 0, total: d.total };
+            if (src === 'photos')  this.photoProgress   = { current: 0, total: d.total };
+          }
+          if (d.type === 'log' && d.current !== undefined) {
+            if (src === 'detail')  this.detailProgress.current  = d.current;
+            if (src === 'website') this.websiteProgress.current = d.current;
+            if (src === 'reviews') this.reviewProgress.current  = d.current;
+            if (src === 'photos')  this.photoProgress.current   = d.current;
+          }
+          if (d.type === 'done') {
+            this.loadStats();
+            if (src === 'detail'  && this.detailProgress.total)  this.detailProgress.current  = this.detailProgress.total;
+            if (src === 'website' && this.websiteProgress.total) this.websiteProgress.current = this.websiteProgress.total;
+            if (src === 'reviews' && this.reviewProgress.total)  this.reviewProgress.current  = this.reviewProgress.total;
+            if (src === 'photos'  && this.photoProgress.total)   this.photoProgress.current   = this.photoProgress.total;
+          }
         }
       };
     },
@@ -2247,6 +2326,61 @@ function app() {
       this.masterScraping = false;
       await this.loadLeads();
       this.notify(`🎉 Master Scraper complete — ${ids.length} leads fully enriched`);
+    },
+
+    async highImpactScrapeFromScraper() {
+      if (!this.selectedZips.size || !this.selectedCats.size) return;
+      this.masterScraping = true;
+      this.highImpactScraping = true;
+      this.secondaryStopping = false;
+      this.notify('⚡ Ultra Scrape: Phase 1 — Fast Map Scrape (max leads, no waiting)...');
+
+      // Phase 1: Fast scrape — collect all leads quickly without per-business detail visits
+      await this.startScrape(false);
+
+      // Wait for map scrape to complete
+      await new Promise(resolve => {
+        const poll = setInterval(async () => {
+          const s = await fetch('/api/scrape/status').then(r => r.json()).catch(() => ({ scraping: true }));
+          if (!s.scraping) { clearInterval(poll); resolve(); }
+        }, 2000);
+      });
+
+      if (this.stopping || this.secondaryStopping) {
+        this.masterScraping = false;
+        this.highImpactScraping = false;
+        this.stopping = false;
+        this.secondaryStopping = false;
+        this.notify('🛑 Ultra Scrape stopped after Phase 1');
+        return;
+      }
+
+      await this.loadLeads();
+      const ids = this.leads.map(l => l.id);
+      if (!ids.length) { this.masterScraping = false; this.highImpactScraping = false; return; }
+
+      this.notify(`⚡ Ultra Scrape: Phase 2 — High-Impact enrichment for ${ids.length} leads (detail → website+reviews+photos in parallel)...`);
+      this.detailScraping = true;
+      this.websiteScraping = true;
+      this.reviewScraping = true;
+      this.photoScraping = true;
+
+      try {
+        await fetch('/api/scrape/high-impact-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids, workers: this.form.workers, force: this.form.forceRescrape }),
+        });
+        this.notify(`⚡ Ultra Scrape complete — ${ids.length} leads fully enriched!`);
+      } catch { this.notify('❌ Ultra Scrape Phase 2 failed'); }
+
+      this.detailScraping = false;
+      this.websiteScraping = false;
+      this.reviewScraping = false;
+      this.photoScraping = false;
+      this.masterScraping = false;
+      this.highImpactScraping = false;
+      await this.loadLeads();
     },
 
     async startScrape(detailFirst = false) {
@@ -2356,7 +2490,7 @@ function app() {
       this.notify('Stop signal sent — finishing current item(s)...');
       // Auto-clear once all secondary scrapers finish
       const poll = setInterval(() => {
-        if (!this.websiteScraping && !this.detailScraping && !this.reviewScraping && !this.photoScraping && !this.masterScraping) {
+        if (!this.websiteScraping && !this.detailScraping && !this.reviewScraping && !this.photoScraping && !this.masterScraping && !this.highImpactScraping) {
           this.secondaryStopping = false;
           clearInterval(poll);
         }
@@ -2681,6 +2815,32 @@ function app() {
       this.secondaryStopping = false;
       await this.loadLeads();
       this.notify(`🎉 Master scrape complete for ${ids.length} lead(s)`);
+    },
+
+    async highImpactScrapeAll() {
+      if (!this.selected.size) return;
+      this.highImpactScraping = true;
+      this.detailScraping = true;
+      this.websiteScraping = true;
+      this.reviewScraping = true;
+      this.photoScraping = true;
+      this.secondaryStopping = false;
+      const ids = [...this.selected];
+      this.notify(`⚡ High-Impact scrape started for ${ids.length} lead(s) — Phase 1: Details, Phase 2: Website+Reviews+Photos in parallel...`);
+      try {
+        await fetch('/api/scrape/high-impact-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids, workers: this.form.workers, force: this.form.forceRescrape }),
+        });
+        this.notify(`⚡ High-Impact complete — ${ids.length} leads fully enriched!`);
+      } catch { this.notify('❌ High-Impact scrape failed'); }
+      this.highImpactScraping = false;
+      this.detailScraping = false;
+      this.websiteScraping = false;
+      this.reviewScraping = false;
+      this.photoScraping = false;
+      await this.loadLeads();
     },
 
     async deleteAll() {
